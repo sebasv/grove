@@ -1,0 +1,17 @@
+---
+source: src/ui/main_pane.rs
+assertion_line: 79
+expression: render_to_string(&app)
+---
+"                                                            "
+"  Active worktree                                           "
+"  ────────────────────────────────────────                  "
+"  repo:    grove                                            "
+"  branch:  feat/sidebar                                     "
+"  path:    /Users/sebas/dev/grove-feat-sidebar              "
+"                                                            "
+"  In later phases this pane will show embedded              "
+"  terminals and the diff viewer.                            "
+"                                                            "
+"                                                            "
+"                                                            "

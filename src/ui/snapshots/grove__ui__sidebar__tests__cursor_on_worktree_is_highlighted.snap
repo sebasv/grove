@@ -1,0 +1,25 @@
+---
+source: src/ui/sidebar.rs
+assertion_line: 91
+expression: render_to_string(&app)
+---
+" PROJECTS                       "
+" ────────────────────────────   "
+" ▼ grove                        "
+"   ○ main                       "
+"▸  ● feat/sidebar               "
+"   ● fix/deps                   "
+"                                "
+" ▼ dotfiles                     "
+"   ○ main                       "
+"   ● wip/zsh                    "
+"                                "
+" ────────────────────────────   "
+" [a] Add repo                   "
+" [w] New worktree               "
+"                                "
+" j/k  navigate                  "
+" ?    help                      "
+" q    quit                      "
+"                                "
+"                                "

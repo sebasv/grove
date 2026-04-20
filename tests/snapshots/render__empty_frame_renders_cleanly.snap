@@ -1,0 +1,15 @@
+---
+source: tests/render.rs
+assertion_line: 8
+expression: terminal.backend()
+---
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "

@@ -1,0 +1,18 @@
+[package]
+name = "grove"
+version = "0.1.0"
+edition = "2021"
+description = "A TUI for cultivating git repos, worktrees, and the work inside them"
+repository = "https://github.com/sebasv/grove"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+directories = "5"
+ratatui = "0.28"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+insta = "1"

@@ -1,0 +1,17 @@
+---
+source: src/ui/main_pane.rs
+assertion_line: 68
+expression: render_to_string(&app)
+---
+"                                                            "
+"  Select a worktree from the sidebar.                       "
+"  (↑↓ or j/k to move, Enter to activate)                    "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
