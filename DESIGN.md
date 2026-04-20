@@ -418,15 +418,16 @@ Worktrees discovered automatically via `git worktree list --porcelain`.
 
 | Phase | Scope |
 |-------|-------|
-| **v0.1 — skeleton** | Sidebar with static repo list, basic `j/k` navigation |
-| **v0.2 — git status** | Live badges via `git2` + `notify` watcher |
-| **v0.3 — embedded terminal (one)** | Single PTY in main pane via `tui-term`; Insert/Scrollback modes |
-| **v0.4 — terminal tabs** | Multiple PTYs per worktree; tab bar |
-| **v0.5 — diff: local** | Local changes viewer, stage/unstage |
-| **v0.6 — diff: branch** | Branch-vs-main mode, mode switcher |
-| **v0.7 — GitHub PR** | PR + CI badge polling via `octocrab` |
-| **v0.8 — worktree management** | Create/delete worktrees from TUI |
-| **v1.0** | Config file, themes, stable keybindings, `--help` |
+| **v0.1 — skeleton** | Sidebar with config-driven repo list, `j/k/h/l/Enter` navigation, help overlay, persisted UI state |
+| **v0.2 — repo management** | In-app add/remove repo modal (`a` / `R`) that writes `config.toml`; empty-sidebar first-run ("No repos — press `a` to add one"). Replaces the v0.1 `--init` round-trip. |
+| **v0.3 — git status** | Live badges via `git2` + `notify` watcher |
+| **v0.4 — embedded terminal (one)** | Single PTY in main pane via `tui-term`; Insert/Scrollback modes |
+| **v0.5 — terminal tabs** | Multiple PTYs per worktree; tab bar |
+| **v0.6 — diff: local** | Local changes viewer, stage/unstage |
+| **v0.7 — diff: branch** | Branch-vs-main mode, mode switcher |
+| **v0.8 — GitHub PR** | PR + CI badge polling via `octocrab` |
+| **v0.9 — worktree management** | Create/delete worktrees from TUI (`w` / `W`) |
+| **v1.0** | Config file polish, themes, stable keybindings, `--help` |
 | **v1.1** | Mouse support — click to focus panes, scroll wheel in terminal/diff, click tabs |
 | **v1.2** | User-configurable keybindings |
 | **v1.5** | Optional tmux backing for session persistence |
