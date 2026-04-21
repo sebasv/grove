@@ -15,10 +15,6 @@ pub struct TextInput {
 }
 
 impl TextInput {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn value(&self) -> &str {
         &self.buffer
     }
@@ -122,7 +118,7 @@ mod tests {
 
     #[test]
     fn insert_ascii_characters() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         input.insert_char('h');
         input.insert_char('i');
         assert_eq!(input.value(), "hi");
@@ -131,7 +127,7 @@ mod tests {
 
     #[test]
     fn insert_at_cursor_position() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         for c in "hllo".chars() {
             input.insert_char(c);
         }
@@ -143,7 +139,7 @@ mod tests {
 
     #[test]
     fn backspace_across_multibyte_boundary() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         input.insert_char('a');
         input.insert_char('😀'); // 4-byte UTF-8
         input.insert_char('b');
@@ -160,7 +156,7 @@ mod tests {
 
     #[test]
     fn delete_at_end_is_noop() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         input.insert_char('a');
         input.delete();
         assert_eq!(input.value(), "a");
@@ -168,7 +164,7 @@ mod tests {
 
     #[test]
     fn delete_removes_char_at_cursor() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         for c in "abc".chars() {
             input.insert_char(c);
         }
@@ -180,7 +176,7 @@ mod tests {
 
     #[test]
     fn move_left_right_stay_on_char_boundaries() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         input.insert_char('a');
         input.insert_char('🌲'); // 4-byte UTF-8
         input.insert_char('b');
@@ -195,7 +191,7 @@ mod tests {
 
     #[test]
     fn home_and_end_jump_to_boundaries() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         for c in "hello".chars() {
             input.insert_char(c);
         }
@@ -207,7 +203,7 @@ mod tests {
 
     #[test]
     fn cursor_clamped_at_bounds() {
-        let mut input = TextInput::new();
+        let mut input = TextInput::default();
         input.move_left();
         assert_eq!(input.cursor_byte(), 0);
         input.insert_char('a');

@@ -760,6 +760,35 @@ mod tests {
     }
 
     #[test]
+    fn open_confirm_remove_uses_parent_repo_when_cursor_on_worktree() {
+        let mut app = AppState::fixture();
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 1,
+            worktree: 0,
+        });
+        app.update(AppMessage::OpenConfirmRemoveRepo);
+        match app.ui.modal {
+            Some(Modal::ConfirmRemoveRepo { repo_idx }) => assert_eq!(repo_idx, 1),
+            other => panic!("expected ConfirmRemoveRepo(1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canceling_add_repo_does_not_write_config() {
+        let tmp = temp_dir();
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path.clone());
+        app.update(AppMessage::OpenAddRepo);
+        for c in "/some/path".chars() {
+            app.update(AppMessage::InputChar(c));
+        }
+        app.update(AppMessage::CloseModal);
+        assert!(app.ui.modal.is_none());
+        assert!(!config_path.exists(), "config must not be written on cancel");
+        assert!(app.repos.is_empty());
+    }
+
+    #[test]
     fn remove_repo_clears_matching_active_worktree() {
         let mut app = AppState::fixture();
         // Write a dummy config so save() works.
