@@ -5,6 +5,7 @@ mod git;
 mod github;
 mod model;
 mod paths;
+mod keymap;
 mod state;
 mod terminal;
 mod theme;
@@ -451,7 +452,7 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
     }
 
     match app.ui.focus {
-        FocusZone::Sidebar => InputAction::Message(default_keys(key)),
+        FocusZone::Sidebar => InputAction::Message(default_keys(key, &app.config.keys)),
         FocusZone::Main => main_focus_action(key, app),
     }
 }
@@ -682,20 +683,36 @@ fn refresh_repo_statuses(repo_idx: usize, app: &AppState, tx: &EventSender) {
     }
 }
 
-fn default_keys(key: KeyEvent) -> AppMessage {
+fn default_keys(key: KeyEvent, km: &keymap::Keymap) -> AppMessage {
+    // Configurable actions take precedence.
+    if km.quit.matches(&key) {
+        return AppMessage::Quit;
+    }
+    if km.help.matches(&key) {
+        return AppMessage::ToggleHelp;
+    }
+    if km.refresh.matches(&key) {
+        return AppMessage::RefreshAll;
+    }
+    if km.add_repo.matches(&key) {
+        return AppMessage::OpenAddRepo;
+    }
+    if km.remove_repo.matches(&key) {
+        return AppMessage::OpenConfirmRemoveRepo;
+    }
+    if km.new_worktree.matches(&key) {
+        return AppMessage::OpenNewWorktree;
+    }
+    if km.remove_worktree.matches(&key) {
+        return AppMessage::OpenConfirmRemoveWorktree;
+    }
+    // Fixed navigation bindings (not yet configurable).
     match key.code {
-        KeyCode::Char('q') => AppMessage::Quit,
-        KeyCode::Char('?') => AppMessage::ToggleHelp,
         KeyCode::Char('j') | KeyCode::Down => AppMessage::MoveCursor(Direction::Down),
         KeyCode::Char('k') | KeyCode::Up => AppMessage::MoveCursor(Direction::Up),
         KeyCode::Char('h') | KeyCode::Left => AppMessage::CollapseOrAscend,
         KeyCode::Char('l') | KeyCode::Right => AppMessage::ExpandOrDescend,
         KeyCode::Enter => AppMessage::Activate,
-        KeyCode::Char('a') => AppMessage::OpenAddRepo,
-        KeyCode::Char('R') => AppMessage::OpenConfirmRemoveRepo,
-        KeyCode::Char('w') => AppMessage::OpenNewWorktree,
-        KeyCode::Char('W') => AppMessage::OpenConfirmRemoveWorktree,
-        KeyCode::Char('r') => AppMessage::RefreshAll,
         _ => AppMessage::NoOp,
     }
 }

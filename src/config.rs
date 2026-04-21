@@ -23,6 +23,8 @@ pub struct Config {
     #[serde(default)]
     pub theme: ThemeConfig,
     #[serde(default)]
+    pub keys: crate::keymap::Keymap,
+    #[serde(default)]
     pub repos: Vec<RepoConfig>,
 }
 
@@ -63,6 +65,7 @@ impl Default for Config {
         Self {
             general: General::default(),
             theme: ThemeConfig::default(),
+            keys: crate::keymap::Keymap::default(),
             repos: Vec::new(),
         }
     }
@@ -130,6 +133,7 @@ mod tests {
                 default_base_branch: "main".to_string(),
             },
             theme: ThemeConfig::default(),
+            keys: crate::keymap::Keymap::default(),
             repos: vec![
                 RepoConfig {
                     name: "grove".to_string(),
