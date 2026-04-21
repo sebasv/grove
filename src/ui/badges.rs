@@ -4,7 +4,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-use crate::model::WorktreeStatus;
+use crate::model::{ChecksRollup, PrState, PrStatus, WorktreeStatus};
 
 /// Build the colored span sequence for a worktree's status, ordered by
 /// priority (leftmost = most urgent).
@@ -63,6 +63,40 @@ pub fn badge_spans(status: &WorktreeStatus) -> Vec<Span<'static>> {
 /// terminal.
 pub fn badge_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
+/// Append PR + CI spans to the output of `badge_spans`.  No-op when `pr` is
+/// None.  Call this after `badge_spans` to keep the status badges stable.
+pub fn append_pr_spans(pr: Option<&PrStatus>, spans: &mut Vec<Span<'static>>) {
+    let Some(pr) = pr else { return };
+    if !spans.is_empty() {
+        spans.push(Span::raw(" "));
+    }
+    let (glyph, style) = match pr.state {
+        PrState::Open => ("●", Style::default().fg(Color::Green)),
+        PrState::Draft => ("◐", Style::default().fg(Color::Yellow)),
+        PrState::Merged => (
+            "✓●",
+            Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+        ),
+        PrState::Closed => ("●", Style::default().add_modifier(Modifier::DIM)),
+    };
+    spans.push(Span::styled(glyph.to_string(), style));
+    match pr.checks {
+        ChecksRollup::Failing => {
+            spans.push(Span::styled(
+                "✗".to_string(),
+                Style::default().fg(Color::Red),
+            ));
+        }
+        ChecksRollup::Pending => {
+            spans.push(Span::styled(
+                "⟳".to_string(),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        ChecksRollup::Passing | ChecksRollup::None => {}
+    }
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ pub enum Event {
     RepoDirty(RepoId),
     StatusReady(WorktreeId, WorktreeStatus),
     DiffReady(WorktreeId, Vec<crate::git::DiffFile>),
+    PrStatusReady(WorktreeId, crate::model::PrStatus),
     /// A terminal's reader thread advanced its vt100 parser state; trigger a
     /// repaint.  The active-worktree's parser is the one we render, so we
     /// don't need to know which terminal emitted the event.

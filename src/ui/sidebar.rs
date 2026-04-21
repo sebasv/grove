@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::app::{AppState, SidebarCursor};
 use crate::model::WorktreeStatus;
-use crate::ui::badges::{badge_spans, badge_width};
+use crate::ui::badges::{append_pr_spans, badge_spans, badge_width};
 
 const SIDEBAR_WIDTH: usize = 32;
 const DIVIDER: &str = "────────────────────────────";
@@ -56,6 +56,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                     branch_glyph,
                     &wt.branch,
                     wt.status.as_ref(),
+                    wt.pr.as_ref(),
                     is_here,
                     highlight,
                 );
@@ -81,11 +82,13 @@ fn worktree_line(
     branch_glyph: &str,
     branch: &str,
     status: Option<&WorktreeStatus>,
+    pr: Option<&crate::model::PrStatus>,
     is_cursor: bool,
     highlight: Style,
 ) -> Line<'static> {
     let prefix = format!("{marker}  {branch_glyph} ");
-    let status_spans = status.map(|s| badge_spans(s)).unwrap_or_default();
+    let mut status_spans = status.map(|s| badge_spans(s)).unwrap_or_default();
+    append_pr_spans(pr, &mut status_spans);
     let status_cols = if status_spans.is_empty() {
         0
     } else {
