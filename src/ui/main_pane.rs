@@ -32,7 +32,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
         match view {
             MainView::Diff => {
                 if let Some(state) = app.diffs.get(&id) {
-                    diff::render(frame, inner, state);
+                    let base = app
+                        .repos
+                        .get(id.0)
+                        .map(|r| r.base_branch.as_str())
+                        .unwrap_or("main");
+                    diff::render(frame, inner, state, base);
                     return inner;
                 }
                 frame.render_widget(

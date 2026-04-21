@@ -35,6 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    Tab               list ↔ content"),
         Line::from("    J / K             scroll content"),
         Line::from("    s / u             stage / unstage"),
+        Line::from("    m                 switch local ↔ branch mode"),
         Line::from(""),
         Line::styled("  Global", bold),
         Line::from("    Ctrl+Space        cycle focus (sidebar ↔ main)"),

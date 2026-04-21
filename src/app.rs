@@ -151,6 +151,14 @@ pub struct DiffState {
     pub cursor: usize,
     pub scroll: u16,
     pub diff_focus: DiffFocus,
+    pub mode: DiffMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DiffMode {
+    #[default]
+    Local,
+    Branch,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -217,6 +225,7 @@ pub enum AppMessage {
     ScrollTop,
     ScrollBottom,
     ToggleDiffView,
+    ToggleDiffMode,
     DiffCursorUp,
     DiffCursorDown,
     DiffToggleFocus,
@@ -294,6 +303,7 @@ impl AppState {
             AppMessage::ScrollTop => self.with_active_terminals(|t| t.scroll_home()),
             AppMessage::ScrollBottom => self.with_active_terminals(|t| t.scroll_end()),
             AppMessage::ToggleDiffView => self.toggle_diff_view(),
+            AppMessage::ToggleDiffMode => self.toggle_diff_mode(),
             AppMessage::DiffCursorUp => self.move_diff_cursor(-1),
             AppMessage::DiffCursorDown => self.move_diff_cursor(1),
             AppMessage::DiffToggleFocus => self.toggle_diff_focus(),
@@ -314,6 +324,26 @@ impl AppState {
             };
             self.main_views.insert(id, next);
         }
+    }
+
+    fn toggle_diff_mode(&mut self) {
+        if let Some(id) = self.ui.active_worktree {
+            let d = self.diffs.entry(id).or_default();
+            d.mode = match d.mode {
+                DiffMode::Local => DiffMode::Branch,
+                DiffMode::Branch => DiffMode::Local,
+            };
+            d.cursor = 0;
+            d.scroll = 0;
+            d.files.clear();
+        }
+    }
+
+    pub fn active_diff_mode(&self) -> DiffMode {
+        let Some(id) = self.ui.active_worktree else {
+            return DiffMode::Local;
+        };
+        self.diffs.get(&id).map(|d| d.mode).unwrap_or_default()
     }
 
     fn move_diff_cursor(&mut self, delta: i32) {
