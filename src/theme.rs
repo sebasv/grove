@@ -36,6 +36,16 @@ pub enum ThemeName {
     Gruvbox,
 }
 
+impl ThemeName {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Tokyonight,
+            Self::Tokyonight => Self::Gruvbox,
+            Self::Gruvbox => Self::Default,
+        }
+    }
+}
+
 pub fn resolve(name: ThemeName) -> Theme {
     match name {
         ThemeName::Default => Theme::default(),

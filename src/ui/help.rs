@@ -39,6 +39,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::styled("  Global", bold),
         Line::from("    Ctrl+Space        cycle focus (sidebar ↔ main)"),
+        Line::from("    F2                cycle color scheme"),
         Line::from("    ?                 toggle this help"),
         Line::from("    q                 quit (sidebar focus only)"),
         Line::from(""),

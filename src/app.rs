@@ -20,6 +20,7 @@ pub struct AppState {
     pub diffs: HashMap<WorktreeId, DiffState>,
     pub main_views: HashMap<WorktreeId, MainView>,
     pub theme: crate::theme::Theme,
+    pub theme_name: crate::theme::ThemeName,
     pub should_quit: bool,
 }
 
@@ -255,6 +256,7 @@ pub enum AppMessage {
     DiffContentDown,
     StageFocused,
     UnstageFocused,
+    CycleTheme,
     Quit,
     NoOp,
 }
@@ -286,6 +288,7 @@ impl AppState {
             diffs: HashMap::new(),
             main_views: HashMap::new(),
             theme: crate::theme::Theme::default(),
+            theme_name: crate::theme::ThemeName::default(),
             should_quit: false,
         })
     }
@@ -336,6 +339,10 @@ impl AppState {
             AppMessage::DiffContentDown => self.scroll_diff(1),
             // Stage/UnstageFocused need side effects (subprocess + refresh); handled outside update.
             AppMessage::StageFocused | AppMessage::UnstageFocused => {}
+            AppMessage::CycleTheme => {
+                self.theme_name = self.theme_name.next();
+                self.theme = crate::theme::resolve(self.theme_name);
+            }
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
         }
@@ -1025,6 +1032,7 @@ impl AppState {
             diffs: HashMap::new(),
             main_views: HashMap::new(),
             theme: crate::theme::Theme::default(),
+            theme_name: crate::theme::ThemeName::default(),
             should_quit: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
@@ -1041,6 +1049,7 @@ impl AppState {
             diffs: HashMap::new(),
             main_views: HashMap::new(),
             theme: crate::theme::Theme::default(),
+            theme_name: crate::theme::ThemeName::default(),
             should_quit: false,
         }
     }

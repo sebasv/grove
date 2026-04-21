@@ -95,9 +95,10 @@ async fn run_cli() -> Result<ExitCode> {
     }
 
     let config = Config::load_or_default(&config_path)?;
-    let theme = theme::resolve(config.theme.base);
+    let theme_name = config.theme.base;
     let mut app = AppState::load(config, config_path.clone())?;
-    app.theme = theme;
+    app.theme_name = theme_name;
+    app.theme = theme::resolve(theme_name);
     if let Some(persisted) = state::load(&paths.state_file)? {
         app.apply_persisted(persisted);
     }
@@ -332,6 +333,13 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
         && key.modifiers.contains(KeyModifiers::CONTROL)
     {
         return InputAction::Message(AppMessage::CycleFocus);
+    }
+
+    // F2 cycles the color scheme globally — intercepted before PTY dispatch so
+    // it works from both sidebar and terminal focus without sending an escape
+    // sequence to the shell.
+    if app.ui.modal.is_none() && key.code == KeyCode::F(2) {
+        return InputAction::Message(AppMessage::CycleTheme);
     }
 
     if let Some(modal) = app.ui.modal.as_ref() {
