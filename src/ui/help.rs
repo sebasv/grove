@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    Ctrl+\\            toggle scrollback mode"),
         Line::from(""),
         Line::styled("  Diff (focus=Main)", bold),
-        Line::from("    Alt+d             toggle diff view"),
+        Line::from("    Ctrl+d            toggle diff view"),
         Line::from("    j / k             prev / next file"),
         Line::from("    Tab               list ↔ content"),
         Line::from("    J / K             scroll content"),

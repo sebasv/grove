@@ -388,6 +388,11 @@ fn main_reserved_keys(key: KeyEvent) -> Option<AppMessage> {
     if ctrl && matches!(key.code, KeyCode::Char('w')) {
         return Some(AppMessage::CloseTerminal);
     }
+    // Ctrl+d: toggle diff view. Must be intercepted here so it doesn't reach
+    // the PTY as EOF (which kills the shell).
+    if ctrl && matches!(key.code, KeyCode::Char('d')) {
+        return Some(AppMessage::ToggleDiffView);
+    }
     if alt {
         return match key.code {
             KeyCode::Char('t') => Some(AppMessage::NewTerminal),
