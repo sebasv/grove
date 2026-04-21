@@ -107,7 +107,7 @@ async fn run_cli() -> Result<ExitCode> {
     let _watchers = spawn_watchers(&app, &tx);
     refresh_all_statuses(&app, &tx);
 
-    let gh_client = github::client_from_env();
+    let gh_client = github::build_client();
     if gh_client.is_some() {
         poll_github_prs(&app, &tx, gh_client.as_ref().unwrap());
     }

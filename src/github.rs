@@ -1,4 +1,9 @@
-//! GitHub PR/CI status polling via octocrab.  Gated on `GITHUB_TOKEN`.
+//! GitHub PR/CI status polling via octocrab.
+//!
+//! Token discovery order:
+//!   1. `GITHUB_TOKEN` / `GH_TOKEN` env var
+//!   2. `gh auth token` (GitHub CLI — works for SSH-key users after `gh auth login`)
+//!   3. None — PR badges are silently disabled
 
 use std::path::Path;
 use std::sync::Arc;
@@ -15,17 +20,42 @@ pub struct OwnerRepo {
     pub repo: String,
 }
 
-/// Build a shared octocrab client if `GITHUB_TOKEN` is set; otherwise `None`.
-pub fn client_from_env() -> Option<Arc<Octocrab>> {
-    let token = std::env::var("GITHUB_TOKEN").ok()?;
-    if token.trim().is_empty() {
-        return None;
-    }
+/// Build a shared octocrab client using the first token found in the
+/// discovery chain; returns `None` if no token is available.
+pub fn build_client() -> Option<Arc<Octocrab>> {
+    let token = token_from_env().or_else(token_from_gh_cli)?;
     Octocrab::builder()
         .personal_token(token)
         .build()
         .ok()
         .map(Arc::new)
+}
+
+fn token_from_env() -> Option<String> {
+    for var in ["GITHUB_TOKEN", "GH_TOKEN"] {
+        if let Ok(t) = std::env::var(var) {
+            let t = t.trim().to_string();
+            if !t.is_empty() {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+/// Ask the GitHub CLI for its stored OAuth token. Works for users who
+/// authenticated via `gh auth login` (including the SSH-key flow) without
+/// needing a manually created PAT.
+fn token_from_gh_cli() -> Option<String> {
+    let out = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!t.is_empty()).then_some(t)
 }
 
 /// Discover `owner/repo` for a repository by reading the `origin` remote URL.
