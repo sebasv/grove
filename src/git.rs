@@ -524,10 +524,14 @@ mod tests {
 
     #[test]
     fn derive_worktree_path_avoids_collisions() {
+        // Isolate under a fresh subdir so we don't collide with anything in
+        // $TMPDIR left over from other runs.
         let dir = temp_dir();
-        let first = derive_worktree_path(&dir, "repo", "branch");
+        let repo_root = dir.join("origin");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        let first = derive_worktree_path(&repo_root, "repo", "branch");
         std::fs::create_dir_all(&first).unwrap();
-        let second = derive_worktree_path(&dir, "repo", "branch");
+        let second = derive_worktree_path(&repo_root, "repo", "branch");
         assert_ne!(first, second);
         assert!(second.to_string_lossy().ends_with("-2"));
     }

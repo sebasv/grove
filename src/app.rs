@@ -19,6 +19,7 @@ pub struct AppState {
     pub terminals: HashMap<WorktreeId, WorktreeTerminals>,
     pub diffs: HashMap<WorktreeId, DiffState>,
     pub main_views: HashMap<WorktreeId, MainView>,
+    pub theme: crate::theme::Theme,
     pub should_quit: bool,
 }
 
@@ -284,6 +285,7 @@ impl AppState {
             terminals: HashMap::new(),
             diffs: HashMap::new(),
             main_views: HashMap::new(),
+            theme: crate::theme::Theme::default(),
             should_quit: false,
         })
     }
@@ -1022,6 +1024,7 @@ impl AppState {
             terminals: HashMap::new(),
             diffs: HashMap::new(),
             main_views: HashMap::new(),
+            theme: crate::theme::Theme::default(),
             should_quit: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
@@ -1037,6 +1040,7 @@ impl AppState {
             terminals: HashMap::new(),
             diffs: HashMap::new(),
             main_views: HashMap::new(),
+            theme: crate::theme::Theme::default(),
             should_quit: false,
         }
     }

@@ -7,6 +7,7 @@ mod model;
 mod paths;
 mod state;
 mod terminal;
+mod theme;
 mod ui;
 
 use std::io::{self, Stdout, Write};
@@ -94,7 +95,9 @@ async fn run_cli() -> Result<ExitCode> {
     }
 
     let config = Config::load_or_default(&config_path)?;
+    let theme = theme::resolve(config.theme.base);
     let mut app = AppState::load(config, config_path.clone())?;
+    app.theme = theme;
     if let Some(persisted) = state::load(&paths.state_file)? {
         app.apply_persisted(persisted);
     }
