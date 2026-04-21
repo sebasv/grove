@@ -1,4 +1,5 @@
 mod add_repo;
+mod badges;
 mod confirm;
 mod help;
 mod main_pane;
