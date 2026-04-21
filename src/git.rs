@@ -43,6 +43,45 @@ pub enum DiffLineKind {
     Del,
 }
 
+pub fn compute_branch_diff(
+    worktree_path: &Path,
+    base_branch: &str,
+) -> Result<Vec<DiffFile>> {
+    let repo = Repository::open(worktree_path)
+        .with_context(|| format!("opening {}", worktree_path.display()))?;
+    let head = repo.head().context("resolving HEAD")?;
+    let head_oid = head.target().ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
+
+    let base_ref = match repo.find_branch(base_branch, BranchType::Local) {
+        Ok(b) => b,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let base_oid = base_ref
+        .get()
+        .target()
+        .ok_or_else(|| anyhow::anyhow!("base branch has no OID"))?;
+
+    let merge_base = match repo.merge_base(head_oid, base_oid) {
+        Ok(oid) => oid,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let base_tree = repo.find_commit(merge_base)?.tree()?;
+    let head_tree = repo.find_commit(head_oid)?.tree()?;
+
+    let mut opts = DiffOptions::new();
+    opts.context_lines(3);
+    let diff = repo
+        .diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut opts))
+        .context("diff tree to tree")?;
+
+    let mut files = Vec::new();
+    // Branch diffs are conceptually unstaged for our UI (all are "changes on
+    // this branch vs base"), but the "staged" flag isn't meaningful here —
+    // we set it to false so the file list renders with the modified glyph.
+    collect_diff(&diff, false, &mut files);
+    Ok(files)
+}
+
 pub fn compute_local_diff(worktree_path: &Path) -> Result<Vec<DiffFile>> {
     let repo = Repository::open(worktree_path)
         .with_context(|| format!("opening {}", worktree_path.display()))?;
@@ -423,6 +462,36 @@ mod tests {
         let s = compute_status(&dir).unwrap();
         assert_eq!(s.ahead, 0);
         assert_eq!(s.behind, 0);
+    }
+
+    #[test]
+    fn compute_branch_diff_only_shows_branch_unique_commits() {
+        let dir = temp_dir();
+        init_repo(&dir);
+        // Branch off and add a commit
+        run_git_test(&dir, &["checkout", "-b", "feat"]);
+        std::fs::write(dir.join("feat.txt"), "feat").unwrap();
+        run_git_test(&dir, &["add", "feat.txt"]);
+        run_git_test(
+            &dir,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "feat",
+                "--quiet",
+            ],
+        );
+
+        let files = compute_branch_diff(&dir, "main").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path.to_str(), Some("feat.txt"));
+
+        // When base doesn't exist, returns empty (not an error).
+        assert!(compute_branch_diff(&dir, "nonexistent").unwrap().is_empty());
     }
 
     #[test]

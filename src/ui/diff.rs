@@ -4,17 +4,44 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{DiffFocus, DiffState};
+use crate::app::{DiffFocus, DiffMode, DiffState};
 use crate::git::{DeltaKind, DiffLineKind};
 
-pub fn render(frame: &mut Frame, area: Rect, state: &DiffState) {
+pub fn render(frame: &mut Frame, area: Rect, state: &DiffState, base_branch: &str) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    render_mode_header(frame, rows[0], state, base_branch);
+
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(30), Constraint::Min(0)])
-        .split(area);
+        .split(rows[1]);
 
     render_file_list(frame, columns[0], state);
     render_content(frame, columns[1], state);
+}
+
+fn render_mode_header(
+    frame: &mut Frame,
+    area: Rect,
+    state: &DiffState,
+    base_branch: &str,
+) {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let label = match state.mode {
+        DiffMode::Local => "  Diff: local changes".to_string(),
+        DiffMode::Branch => format!("  Diff: branch vs {base_branch}"),
+    };
+    let line = Line::from(vec![
+        Span::styled(label, bold),
+        Span::raw("    "),
+        Span::styled("[m] switch mode".to_string(), dim),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_file_list(frame: &mut Frame, area: Rect, state: &DiffState) {
