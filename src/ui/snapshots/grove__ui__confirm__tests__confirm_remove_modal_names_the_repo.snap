@@ -1,0 +1,25 @@
+---
+source: src/ui/confirm.rs
+assertion_line: 48
+expression: render_to_string(&app)
+---
+" PROJECTS                                                             "
+" ────────────────────────────     Select a worktree from the sidebar. "
+"▸▼ grove                          (↑↓ or j/k to move, Enter to activat"
+"   ○ main                                                             "
+"   ● feat/sidebar                                                     "
+"   ● fix/deps                                                         "
+"      ┌ Remove repository? ────────────────────────────────────┐      "
+" ▼ dot│                                                        │      "
+"   ○ m│  Remove "grove" from grove?                            │      "
+"   ● w│  (config.toml will be rewritten;                       │      "
+"      │   the repository on disk is not touched)               │      "
+" ─────│                                                        │      "
+" [a] A│  y/Enter confirm  ·  n/Esc cancel                      │      "
+" [w] N└────────────────────────────────────────────────────────┘      "
+"                                                                      "
+" j/k  navigate                                                        "
+" ?    help                                                            "
+" q    quit                                                            "
+"                                                                      "
+"                                                                      "

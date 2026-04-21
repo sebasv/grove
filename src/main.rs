@@ -14,13 +14,13 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{AppMessage, AppState, Direction};
+use crate::app::{AppMessage, AppState, Direction, Modal};
 use crate::config::Config;
 use crate::paths::AppPaths;
 
@@ -72,13 +72,8 @@ fn run_cli() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    if !config_path.exists() {
-        print_first_run_message(&config_path);
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    let config = Config::load(&config_path)?;
-    let mut app = AppState::load(&config)?;
+    let config = Config::load_or_default(&config_path)?;
+    let mut app = AppState::load(config, config_path.clone())?;
     if let Some(persisted) = state::load(&paths.state_file)? {
         app.apply_persisted(persisted);
     }
@@ -100,7 +95,7 @@ fn run(tui: &mut Tui, app: &mut AppState) -> Result<()> {
         tui.draw(|frame| ui::render(frame, app))?;
 
         if let Event::Key(key) = event::read()? {
-            let msg = key_to_message(key, app.ui.modal.is_some());
+            let msg = key_to_message(key, app.ui.modal.as_ref());
             app.update(msg);
             if app.should_quit {
                 break;
@@ -110,16 +105,19 @@ fn run(tui: &mut Tui, app: &mut AppState) -> Result<()> {
     Ok(())
 }
 
-fn key_to_message(key: KeyEvent, modal_open: bool) -> AppMessage {
+fn key_to_message(key: KeyEvent, modal: Option<&Modal>) -> AppMessage {
     if key.kind != KeyEventKind::Press {
         return AppMessage::NoOp;
     }
-    if modal_open {
-        return match key.code {
-            KeyCode::Char('?') | KeyCode::Esc => AppMessage::CloseModal,
-            _ => AppMessage::NoOp,
-        };
+    match modal {
+        None => default_keys(key),
+        Some(Modal::Help) => help_keys(key),
+        Some(Modal::AddRepo(_)) => add_repo_keys(key),
+        Some(Modal::ConfirmRemoveRepo { .. }) => confirm_keys(key),
     }
+}
+
+fn default_keys(key: KeyEvent) -> AppMessage {
     match key.code {
         KeyCode::Char('q') => AppMessage::Quit,
         KeyCode::Char('?') => AppMessage::ToggleHelp,
@@ -128,6 +126,40 @@ fn key_to_message(key: KeyEvent, modal_open: bool) -> AppMessage {
         KeyCode::Char('h') | KeyCode::Left => AppMessage::CollapseOrAscend,
         KeyCode::Char('l') | KeyCode::Right => AppMessage::ExpandOrDescend,
         KeyCode::Enter => AppMessage::Activate,
+        KeyCode::Char('a') => AppMessage::OpenAddRepo,
+        KeyCode::Char('R') => AppMessage::OpenConfirmRemoveRepo,
+        _ => AppMessage::NoOp,
+    }
+}
+
+fn help_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Char('?') | KeyCode::Esc => AppMessage::CloseModal,
+        _ => AppMessage::NoOp,
+    }
+}
+
+fn add_repo_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Esc => AppMessage::CloseModal,
+        KeyCode::Enter => AppMessage::SubmitModal,
+        KeyCode::Backspace => AppMessage::InputBackspace,
+        KeyCode::Delete => AppMessage::InputDelete,
+        KeyCode::Left => AppMessage::InputCursorLeft,
+        KeyCode::Right => AppMessage::InputCursorRight,
+        KeyCode::Home => AppMessage::InputHome,
+        KeyCode::End => AppMessage::InputEnd,
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            AppMessage::InputChar(c)
+        }
+        _ => AppMessage::NoOp,
+    }
+}
+
+fn confirm_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => AppMessage::SubmitModal,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => AppMessage::CloseModal,
         _ => AppMessage::NoOp,
     }
 }
@@ -136,18 +168,6 @@ fn print_paths(paths: &AppPaths) {
     println!("config: {}", paths.config_file.display());
     println!("state:  {}", paths.state_file.display());
     println!("log:    {}", paths.log_file.display());
-}
-
-fn print_first_run_message(config_path: &std::path::Path) {
-    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    println!();
-    println!("No config file found. Create one at:");
-    println!("  {}", config_path.display());
-    println!();
-    println!("Or run:");
-    println!("  grove --init");
-    println!();
-    println!("to create an empty template.");
 }
 
 fn init_terminal() -> Result<Tui> {

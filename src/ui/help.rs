@@ -4,8 +4,10 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::ui::centered_rect;
+
 pub fn render(frame: &mut Frame, area: Rect) {
-    let modal = centered_rect(54, 14, area);
+    let modal = centered_rect(54, 16, area);
     frame.render_widget(Clear, modal);
 
     let block = Block::default().borders(Borders::ALL).title(" Help ");
@@ -16,6 +18,8 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    j / k             move up / down"),
         Line::from("    h / l             collapse / expand repo"),
         Line::from("    Enter             activate worktree"),
+        Line::from("    a                 add repository"),
+        Line::from("    R                 remove repository"),
         Line::from(""),
         Line::styled("  Global", bold),
         Line::from("    ?                 toggle this help"),
@@ -24,14 +28,6 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("  (Esc or ? to close)"),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), modal);
-}
-
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let w = width.min(area.width);
-    let h = height.min(area.height);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect::new(x, y, w, h)
 }
 
 #[cfg(test)]

@@ -5,6 +5,16 @@ use anyhow::{Context, Result};
 
 use crate::model::Worktree;
 
+pub fn is_git_repo(path: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
     let output = Command::new("git")
         .arg("-C")

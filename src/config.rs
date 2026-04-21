@@ -50,12 +50,43 @@ pub struct RepoConfig {
     pub base_branch: Option<String>,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            general: General::default(),
+            repos: Vec::new(),
+        }
+    }
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
         toml::from_str(&content)
             .with_context(|| format!("parsing config at {}", path.display()))
+    }
+
+    pub fn load_or_default(path: &Path) -> Result<Self> {
+        if path.exists() {
+            Self::load(path)
+        } else {
+            Ok(Self::default())
+        }
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let serialized = toml::to_string_pretty(self).context("serializing config")?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, &serialized)
+            .with_context(|| format!("writing temp config at {}", tmp.display()))?;
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+        Ok(())
     }
 
     pub fn write_template(path: &Path) -> Result<()> {
@@ -72,6 +103,10 @@ impl Config {
         std::fs::write(path, TEMPLATE)
             .with_context(|| format!("writing template to {}", path.display()))?;
         Ok(())
+    }
+
+    pub fn has_repo_named(&self, name: &str) -> bool {
+        self.repos.iter().any(|r| r.name == name)
     }
 }
 

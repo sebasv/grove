@@ -16,6 +16,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     lines.push(Line::from(" PROJECTS"));
     lines.push(Line::from(format!(" {DIVIDER}")));
 
+    if app.repos.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(" No repositories configured."));
+        lines.push(Line::from(""));
+        lines.push(Line::from(" Press [a] to add one."));
+        lines.push(Line::from(""));
+    }
+
     for (i, repo) in app.repos.iter().enumerate() {
         let expanded = app.ui.is_expanded(&repo.name);
         let glyph = if expanded { "▼" } else { "▶" };
@@ -103,6 +111,13 @@ mod tests {
         let mut app = AppState::fixture();
         app.update(AppMessage::MoveCursor(Direction::Down));
         app.update(AppMessage::MoveCursor(Direction::Down));
+        insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn empty_state_shows_add_hint() {
+        use std::path::PathBuf;
+        let app = AppState::empty_fixture(PathBuf::from("/tmp/grove-test-config.toml"));
         insta::assert_snapshot!(render_to_string(&app));
     }
 }

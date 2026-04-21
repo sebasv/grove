@@ -1,0 +1,25 @@
+---
+source: src/ui/add_repo.rs
+assertion_line: 83
+expression: render_to_string(&app)
+---
+" PROJECTS                                                             "
+" ────────────────────────────     Select a worktree from the sidebar. "
+"▸▼ grove                          (↑↓ or j/k to move, Enter to activat"
+"   ○ main                                                             "
+"   ●┌ Add repository ────────────────────────────────────────────┐    "
+"   ●│                                                            │    "
+"    │  Path to git repository:                                   │    "
+" ▼ d│  /tmp/my-new-project                                       │    "
+"   ○│                                                            │    "
+"   ●│                                                            │    "
+"    │                                                            │    "
+" ───│  Enter to add  ·  Esc to cancel                            │    "
+" [a]│                                                            │    "
+" [w]│                                                            │    "
+"    └────────────────────────────────────────────────────────────┘    "
+" j/k  navigate                                                        "
+" ?    help                                                            "
+" q    quit                                                            "
+"                                                                      "
+"                                                                      "
