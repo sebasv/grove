@@ -17,6 +17,10 @@ pub enum Event {
     Input(KeyEvent),
     RepoDirty(RepoId),
     StatusReady(WorktreeId, WorktreeStatus),
+    /// A terminal's reader thread advanced its vt100 parser state; trigger a
+    /// repaint.  The active-worktree's parser is the one we render, so we
+    /// don't need to know which terminal emitted the event.
+    TerminalOutput,
 }
 
 /// Opaque handle that keeps a repo's FS watcher alive for the caller's

@@ -1,0 +1,17 @@
+---
+source: src/ui/main_pane.rs
+assertion_line: 140
+expression: render_to_string(&app)
+---
+"┌ grove · feat/sidebar ────────────────────────────────────┐"
+"│                                                          │"
+"│  Active worktree                                         │"
+"│  ────────────────────────────────────────                │"
+"│  repo:    grove                                          │"
+"│  branch:  feat/sidebar                                   │"
+"│  path:    /Users/sebas/dev/grove-feat-sidebar            │"
+"│                                                          │"
+"│  Press Enter to start a shell here.                      │"
+"│  Ctrl+Space to return to the sidebar.                    │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"
