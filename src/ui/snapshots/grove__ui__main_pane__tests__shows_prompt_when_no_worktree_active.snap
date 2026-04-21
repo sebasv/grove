@@ -1,17 +1,17 @@
 ---
 source: src/ui/main_pane.rs
-assertion_line: 68
+assertion_line: 129
 expression: render_to_string(&app)
 ---
-"                                                            "
-"  Select a worktree from the sidebar.                       "
-"  (↑↓ or j/k to move, Enter to activate)                    "
-"                                                            "
-"                                                            "
-"                                                            "
-"                                                            "
-"                                                            "
-"                                                            "
-"                                                            "
-"                                                            "
-"                                                            "
+"┌ grove ───────────────────────────────────────────────────┐"
+"│                                                          │"
+"│  Select a worktree from the sidebar.                     │"
+"│  (↑↓ or j/k to move, Enter to activate)                  │"
+"│                                                          │"
+"│  Ctrl+Space cycles focus between sidebar and main.       │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"

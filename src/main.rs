@@ -5,6 +5,7 @@ mod git;
 mod model;
 mod paths;
 mod state;
+mod terminal;
 mod ui;
 
 use std::io::{self, Stdout};
@@ -19,14 +20,21 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use portable_pty::PtySize;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{AppMessage, AppState, Direction, Modal};
-use crate::async_evt::{Event, EventReceiver, EventSender};
+use crate::app::{AppMessage, AppState, Direction, FocusZone, Modal};
+use crate::async_evt::{Event, EventReceiver, EventSender, WorktreeId};
 use crate::config::Config;
 use crate::paths::AppPaths;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
+
+enum InputAction {
+    Message(AppMessage),
+    PtyBytes(Vec<u8>),
+    Noop,
+}
 
 #[derive(Parser)]
 #[command(name = "grove", version, about)]
@@ -115,19 +123,15 @@ async fn run(
     tx: EventSender,
 ) -> Result<()> {
     loop {
-        tui.draw(|frame| ui::render(frame, app))?;
+        let main_pane_size = draw(tui, app)?;
+        resize_active_terminal(app, main_pane_size);
 
         let Some(event) = rx.recv().await else {
             break;
         };
         match event {
             Event::Input(key) => {
-                let msg = key_to_message(key, app.ui.modal.as_ref());
-                if matches!(msg, AppMessage::RefreshAll) {
-                    refresh_all_statuses(app, &tx);
-                } else {
-                    app.update(msg);
-                }
+                handle_input(key, app, &tx);
                 if app.should_quit {
                     break;
                 }
@@ -138,9 +142,138 @@ async fn run(
             Event::StatusReady(id, status) => {
                 app.set_worktree_status(id, status);
             }
+            Event::TerminalOutput => {
+                // Parser advanced; next draw picks it up.
+            }
         }
     }
     Ok(())
+}
+
+fn draw(tui: &mut Tui, app: &AppState) -> Result<PtySize> {
+    let mut main_size = PtySize::default();
+    tui.draw(|frame| {
+        let rect = ui::render(frame, app);
+        main_size = PtySize {
+            rows: rect.height,
+            cols: rect.width,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+    })?;
+    Ok(main_size)
+}
+
+fn resize_active_terminal(app: &mut AppState, size: PtySize) {
+    if size.rows == 0 || size.cols == 0 {
+        return;
+    }
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    if let Some(term) = app.terminals.get_mut(&id) {
+        let _ = term.resize(size);
+    }
+}
+
+fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
+    let action = key_to_action(key, app);
+    match action {
+        InputAction::Message(msg) => {
+            let is_activate = matches!(msg, AppMessage::Activate);
+            let is_refresh = matches!(msg, AppMessage::RefreshAll);
+            if is_refresh {
+                refresh_all_statuses(app, tx);
+            } else {
+                app.update(msg);
+            }
+            if is_activate {
+                ensure_terminal_for_active(app, tx);
+            }
+        }
+        InputAction::PtyBytes(bytes) => {
+            if let Some(id) = app.ui.active_worktree {
+                if let Some(term) = app.terminals.get_mut(&id) {
+                    let _ = term.write(&bytes);
+                }
+            }
+        }
+        InputAction::Noop => {}
+    }
+}
+
+fn ensure_terminal_for_active(app: &mut AppState, tx: &EventSender) {
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    if app.terminals.contains_key(&id) {
+        app.ui.focus = FocusZone::Main;
+        return;
+    }
+    let Some(wt) = app
+        .repos
+        .get(id.0)
+        .and_then(|repo| repo.worktrees.get(id.1))
+    else {
+        return;
+    };
+    let size = PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    match terminal::Terminal::spawn(&wt.path, size, id, tx.clone()) {
+        Ok(term) => {
+            app.terminals.insert(id, term);
+            app.ui.focus = FocusZone::Main;
+        }
+        Err(_err) => {
+            // Silent failure in v0.4 — TUI can't safely eprintln while raw-mode.
+            // Logging arrives in v1.0.
+        }
+    }
+}
+
+fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
+    if key.kind != KeyEventKind::Press {
+        return InputAction::Noop;
+    }
+
+    // Ctrl+Space cycles focus from any context except when typing into a modal
+    // (modals own all input to stay predictable).
+    if app.ui.modal.is_none()
+        && key.code == KeyCode::Char(' ')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        return InputAction::Message(AppMessage::CycleFocus);
+    }
+
+    if let Some(modal) = app.ui.modal.as_ref() {
+        return InputAction::Message(match modal {
+            Modal::Help => help_keys(key),
+            Modal::AddRepo(_) => add_repo_keys(key),
+            Modal::ConfirmRemoveRepo { .. } => confirm_keys(key),
+        });
+    }
+
+    match app.ui.focus {
+        FocusZone::Sidebar => InputAction::Message(default_keys(key)),
+        FocusZone::Main => {
+            // In Main, active-worktree keys go to the PTY; if no PTY, we only
+            // respond to Ctrl+Space (handled above).
+            if app.ui.active_worktree.is_some()
+                && app.terminals.contains_key(&app.ui.active_worktree.unwrap())
+            {
+                match terminal::key_to_pty_bytes(key) {
+                    Some(bytes) => InputAction::PtyBytes(bytes),
+                    None => InputAction::Noop,
+                }
+            } else {
+                InputAction::Noop
+            }
+        }
+    }
 }
 
 fn spawn_watchers(app: &AppState, tx: &EventSender) -> Vec<async_evt::RepoWatcher> {
@@ -149,7 +282,6 @@ fn spawn_watchers(app: &AppState, tx: &EventSender) -> Vec<async_evt::RepoWatche
         match async_evt::spawn_repo_watcher(i, repo.root_path.clone(), tx.clone()) {
             Ok(w) => watchers.push(w),
             Err(err) => {
-                // Watching is best-effort; user can still refresh with `r`.
                 eprintln!("warning: watch failed for {}: {err:#}", repo.name);
             }
         }
@@ -171,18 +303,6 @@ fn refresh_repo_statuses(repo_idx: usize, app: &AppState, tx: &EventSender) {
     };
     for (w, wt) in repo.worktrees.iter().enumerate() {
         async_evt::spawn_status_refresh((repo_idx, w), wt.path.clone(), tx.clone());
-    }
-}
-
-fn key_to_message(key: KeyEvent, modal: Option<&Modal>) -> AppMessage {
-    if key.kind != KeyEventKind::Press {
-        return AppMessage::NoOp;
-    }
-    match modal {
-        None => default_keys(key),
-        Some(Modal::Help) => help_keys(key),
-        Some(Modal::AddRepo(_)) => add_repo_keys(key),
-        Some(Modal::ConfirmRemoveRepo { .. }) => confirm_keys(key),
     }
 }
 
@@ -233,6 +353,9 @@ fn confirm_keys(key: KeyEvent) -> AppMessage {
         _ => AppMessage::NoOp,
     }
 }
+
+#[allow(dead_code)] // kept for potential future direct use
+fn _silence(_: WorktreeId) {}
 
 fn print_paths(paths: &AppPaths) {
     println!("config: {}", paths.config_file.display());

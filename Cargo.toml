@@ -1,6 +1,6 @@
 [package]
 name = "grove"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "A TUI for cultivating git repos, worktrees, and the work inside them"
 repository = "https://github.com/sebasv/grove"
@@ -9,14 +9,18 @@ repository = "https://github.com/sebasv/grove"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
+# ratatui 0.29 uses crossterm 0.28; we pin through the default feature set.
 directories = "5"
 futures = "0.3"
 git2 = { version = "0.19", default-features = false }
 notify-debouncer-mini = { version = "0.4", default-features = false }
-ratatui = "0.28"
+portable-pty = "0.8"
+ratatui = "0.29"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 toml = "0.8"
+tui-term = "0.2"
+vt100 = "0.15"
 
 [dev-dependencies]
 insta = "1"

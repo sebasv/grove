@@ -3,10 +3,12 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
+use crate::async_evt::WorktreeId;
 use crate::config::{Config, RepoConfig};
 use crate::git;
 use crate::model::Repo;
 use crate::state::{ActiveWorktreeId, PersistedState, PersistedUi};
+use crate::terminal::Terminal;
 use crate::ui::text_input::TextInput;
 
 pub struct AppState {
@@ -14,6 +16,7 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub repos: Vec<Repo>,
     pub ui: UiState,
+    pub terminals: HashMap<WorktreeId, Terminal>,
     pub should_quit: bool,
 }
 
@@ -23,6 +26,14 @@ pub struct UiState {
     pub cursor: Option<SidebarCursor>,
     pub active_worktree: Option<(usize, usize)>,
     pub modal: Option<Modal>,
+    pub focus: FocusZone,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FocusZone {
+    #[default]
+    Sidebar,
+    Main,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +80,7 @@ pub enum AppMessage {
     SubmitModal,
     CloseModal,
     RefreshAll,
+    CycleFocus,
     Quit,
     NoOp,
 }
@@ -96,6 +108,7 @@ impl AppState {
                 cursor,
                 ..UiState::default()
             },
+            terminals: HashMap::new(),
             should_quit: false,
         })
     }
@@ -121,9 +134,17 @@ impl AppState {
             // RefreshAll is handled outside update() because it spawns tasks; the
             // no-op here keeps the match exhaustive.
             AppMessage::RefreshAll => {}
+            AppMessage::CycleFocus => self.cycle_focus(),
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
         }
+    }
+
+    fn cycle_focus(&mut self) {
+        self.ui.focus = match self.ui.focus {
+            FocusZone::Sidebar => FocusZone::Main,
+            FocusZone::Main => FocusZone::Sidebar,
+        };
     }
 
     pub fn set_worktree_status(&mut self, id: (usize, usize), status: crate::model::WorktreeStatus) {
@@ -246,6 +267,23 @@ impl AppState {
 
         self.repos.remove(idx);
         self.ui.expanded.remove(&name);
+
+        // Drop terminals for the removed repo and shift indices for later repos.
+        let surviving: HashMap<WorktreeId, Terminal> = self
+            .terminals
+            .drain()
+            .filter_map(|((r, w), t)| {
+                if r == idx {
+                    None
+                } else if r > idx {
+                    Some(((r - 1, w), t))
+                } else {
+                    Some(((r, w), t))
+                }
+            })
+            .collect();
+        self.terminals = surviving;
+
         self.ui.active_worktree = self.ui.active_worktree.and_then(|(r, w)| {
             if r == idx {
                 None
@@ -502,6 +540,7 @@ impl AppState {
                 },
             ],
             ui: UiState::default(),
+            terminals: HashMap::new(),
             should_quit: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
@@ -514,6 +553,7 @@ impl AppState {
             config_path,
             repos: Vec::new(),
             ui: UiState::default(),
+            terminals: HashMap::new(),
             should_quit: false,
         }
     }
@@ -652,6 +692,16 @@ mod tests {
         };
         app.apply_persisted(persisted);
         assert_eq!(app.ui.active_worktree, None);
+    }
+
+    #[test]
+    fn cycle_focus_toggles_between_sidebar_and_main() {
+        let mut app = AppState::fixture();
+        assert_eq!(app.ui.focus, FocusZone::Sidebar);
+        app.update(AppMessage::CycleFocus);
+        assert_eq!(app.ui.focus, FocusZone::Main);
+        app.update(AppMessage::CycleFocus);
+        assert_eq!(app.ui.focus, FocusZone::Sidebar);
     }
 
     #[test]
