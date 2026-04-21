@@ -95,6 +95,7 @@ async fn run_cli() -> Result<ExitCode> {
 
     let (tx, rx) = async_evt::channel();
     async_evt::spawn_terminal_reader(tx.clone());
+    let _watchers = spawn_watchers(&app, &tx);
     refresh_all_statuses(&app, &tx);
 
     let result = run(&mut tui, &mut app, rx, tx).await;
@@ -140,6 +141,20 @@ async fn run(
         }
     }
     Ok(())
+}
+
+fn spawn_watchers(app: &AppState, tx: &EventSender) -> Vec<async_evt::RepoWatcher> {
+    let mut watchers = Vec::new();
+    for (i, repo) in app.repos.iter().enumerate() {
+        match async_evt::spawn_repo_watcher(i, repo.root_path.clone(), tx.clone()) {
+            Ok(w) => watchers.push(w),
+            Err(err) => {
+                // Watching is best-effort; user can still refresh with `r`.
+                eprintln!("warning: watch failed for {}: {err:#}", repo.name);
+            }
+        }
+    }
+    watchers
 }
 
 fn refresh_all_statuses(app: &AppState, tx: &EventSender) {

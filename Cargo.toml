@@ -12,7 +12,6 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 directories = "5"
 futures = "0.3"
 git2 = { version = "0.19", default-features = false }
-notify = "7"
 notify-debouncer-mini = { version = "0.4", default-features = false }
 ratatui = "0.28"
 serde = { version = "1", features = ["derive"] }
