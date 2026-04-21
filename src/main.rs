@@ -2,6 +2,7 @@ mod app;
 mod async_evt;
 mod config;
 mod git;
+mod github;
 mod model;
 mod paths;
 mod state;
@@ -106,7 +107,12 @@ async fn run_cli() -> Result<ExitCode> {
     let _watchers = spawn_watchers(&app, &tx);
     refresh_all_statuses(&app, &tx);
 
-    let result = run(&mut tui, &mut app, rx, tx).await;
+    let gh_client = github::client_from_env();
+    if gh_client.is_some() {
+        poll_github_prs(&app, &tx, gh_client.as_ref().unwrap());
+    }
+
+    let result = run(&mut tui, &mut app, rx, tx, gh_client).await;
     restore_terminal()?;
     result?;
 
@@ -121,13 +127,26 @@ async fn run(
     app: &mut AppState,
     mut rx: EventReceiver,
     tx: EventSender,
+    gh_client: Option<std::sync::Arc<octocrab::Octocrab>>,
 ) -> Result<()> {
+    let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    poll_interval.tick().await; // consume the immediate tick
+
     loop {
         let main_pane_size = draw(tui, app)?;
         resize_active_terminal(app, main_pane_size);
 
-        let Some(event) = rx.recv().await else {
-            break;
+        let event = tokio::select! {
+            ev = rx.recv() => match ev {
+                Some(e) => e,
+                None => break,
+            },
+            _ = poll_interval.tick() => {
+                if let Some(client) = &gh_client {
+                    poll_github_prs(app, &tx, client);
+                }
+                continue;
+            }
         };
         match event {
             Event::Input(key) => {
@@ -154,6 +173,9 @@ async fn run(
             }
             Event::DiffReady(id, files) => {
                 app.set_diff(id, files);
+            }
+            Event::PrStatusReady(id, pr) => {
+                app.set_worktree_pr(id, pr);
             }
             Event::TerminalOutput => {
                 // Parser advanced; next draw picks it up.
@@ -445,6 +467,27 @@ fn spawn_watchers(app: &AppState, tx: &EventSender) -> Vec<async_evt::RepoWatche
         }
     }
     watchers
+}
+
+fn poll_github_prs(
+    app: &AppState,
+    tx: &EventSender,
+    client: &std::sync::Arc<octocrab::Octocrab>,
+) {
+    for (r, repo) in app.repos.iter().enumerate() {
+        let Some(owner_repo) = github::discover_owner_repo(&repo.root_path) else {
+            continue;
+        };
+        for (w, wt) in repo.worktrees.iter().enumerate() {
+            github::spawn_pr_fetch(
+                client.clone(),
+                owner_repo.clone(),
+                wt.branch.clone(),
+                (r, w),
+                tx.clone(),
+            );
+        }
+    }
 }
 
 fn refresh_all_statuses(app: &AppState, tx: &EventSender) {

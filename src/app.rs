@@ -425,6 +425,15 @@ impl AppState {
         }
     }
 
+    pub fn set_worktree_pr(&mut self, id: (usize, usize), pr: crate::model::PrStatus) {
+        let (r, w) = id;
+        if let Some(repo) = self.repos.get_mut(r) {
+            if let Some(wt) = repo.worktrees.get_mut(w) {
+                wt.pr = Some(pr);
+            }
+        }
+    }
+
     fn open_add_repo(&mut self) {
         if self.ui.modal.is_some() {
             return;
@@ -772,18 +781,21 @@ impl AppState {
                             branch: "main".to_string(),
                             path: PathBuf::from("/Users/sebas/dev/grove"),
                             is_primary: true,
+                            pr: None,
                             status: None,
                         },
                         Worktree {
                             branch: "feat/sidebar".to_string(),
                             path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
                             is_primary: false,
+                            pr: None,
                             status: None,
                         },
                         Worktree {
                             branch: "fix/deps".to_string(),
                             path: PathBuf::from("/Users/sebas/dev/grove-fix-deps"),
                             is_primary: false,
+                            pr: None,
                             status: None,
                         },
                     ],
@@ -797,12 +809,14 @@ impl AppState {
                             branch: "main".to_string(),
                             path: PathBuf::from("/Users/sebas/dotfiles"),
                             is_primary: true,
+                            pr: None,
                             status: None,
                         },
                         Worktree {
                             branch: "wip/zsh".to_string(),
                             path: PathBuf::from("/Users/sebas/dotfiles-wip-zsh"),
                             is_primary: false,
+                            pr: None,
                             status: None,
                         },
                     ],
