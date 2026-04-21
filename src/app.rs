@@ -16,8 +16,108 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub repos: Vec<Repo>,
     pub ui: UiState,
-    pub terminals: HashMap<WorktreeId, Terminal>,
+    pub terminals: HashMap<WorktreeId, WorktreeTerminals>,
     pub should_quit: bool,
+}
+
+pub struct WorktreeTerminals {
+    pub list: Vec<Terminal>,
+    pub active: usize,
+    pub mode: TerminalMode,
+    pub scroll_offset: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TerminalMode {
+    #[default]
+    Insert,
+    Scrollback,
+}
+
+impl WorktreeTerminals {
+    pub fn new(term: Terminal) -> Self {
+        Self {
+            list: vec![term],
+            active: 0,
+            mode: TerminalMode::Insert,
+            scroll_offset: 0,
+        }
+    }
+
+    pub fn active_mut(&mut self) -> Option<&mut Terminal> {
+        self.list.get_mut(self.active)
+    }
+
+    pub fn active_ref(&self) -> Option<&Terminal> {
+        self.list.get(self.active)
+    }
+
+    pub fn push(&mut self, term: Terminal) {
+        self.list.push(term);
+        self.active = self.list.len() - 1;
+        self.mode = TerminalMode::Insert;
+        self.scroll_offset = 0;
+    }
+
+    /// Close the active tab; returns true when this was the last tab and
+    /// the caller should drop the entire `WorktreeTerminals` entry.
+    pub fn close_active(&mut self) -> bool {
+        if self.list.is_empty() {
+            return true;
+        }
+        self.list.remove(self.active);
+        if self.list.is_empty() {
+            return true;
+        }
+        if self.active >= self.list.len() {
+            self.active = self.list.len() - 1;
+        }
+        self.mode = TerminalMode::Insert;
+        self.scroll_offset = 0;
+        false
+    }
+
+    pub fn next_tab(&mut self) {
+        if self.list.is_empty() {
+            return;
+        }
+        self.active = (self.active + 1) % self.list.len();
+    }
+
+    pub fn prev_tab(&mut self) {
+        if self.list.is_empty() {
+            return;
+        }
+        self.active = if self.active == 0 {
+            self.list.len() - 1
+        } else {
+            self.active - 1
+        };
+    }
+
+    pub fn toggle_scrollback(&mut self) {
+        self.mode = match self.mode {
+            TerminalMode::Insert => TerminalMode::Scrollback,
+            TerminalMode::Scrollback => {
+                self.scroll_offset = 0;
+                TerminalMode::Insert
+            }
+        };
+    }
+
+    pub fn scroll(&mut self, delta: i32) {
+        let new = self.scroll_offset as i32 + delta;
+        self.scroll_offset = new.max(0) as usize;
+    }
+
+    pub fn scroll_home(&mut self) {
+        // Arbitrary large — vt100 clamps internally.
+        self.scroll_offset = 10_000;
+    }
+
+    pub fn scroll_end(&mut self) {
+        self.scroll_offset = 0;
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -81,6 +181,17 @@ pub enum AppMessage {
     CloseModal,
     RefreshAll,
     CycleFocus,
+    NewTerminal,
+    CloseTerminal,
+    NextTab,
+    PrevTab,
+    ToggleScrollback,
+    ScrollUp,
+    ScrollDown,
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollTop,
+    ScrollBottom,
     Quit,
     NoOp,
 }
@@ -135,8 +246,43 @@ impl AppState {
             // no-op here keeps the match exhaustive.
             AppMessage::RefreshAll => {}
             AppMessage::CycleFocus => self.cycle_focus(),
+            AppMessage::NewTerminal => {} // handled outside update (spawn is a side effect)
+            AppMessage::CloseTerminal => self.close_active_terminal(),
+            AppMessage::NextTab => self.with_active_terminals(|t| t.next_tab()),
+            AppMessage::PrevTab => self.with_active_terminals(|t| t.prev_tab()),
+            AppMessage::ToggleScrollback => {
+                self.with_active_terminals(|t| t.toggle_scrollback())
+            }
+            AppMessage::ScrollUp => self.with_active_terminals(|t| t.scroll(1)),
+            AppMessage::ScrollDown => self.with_active_terminals(|t| t.scroll(-1)),
+            AppMessage::ScrollPageUp => self.with_active_terminals(|t| t.scroll(20)),
+            AppMessage::ScrollPageDown => self.with_active_terminals(|t| t.scroll(-20)),
+            AppMessage::ScrollTop => self.with_active_terminals(|t| t.scroll_home()),
+            AppMessage::ScrollBottom => self.with_active_terminals(|t| t.scroll_end()),
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
+        }
+    }
+
+    fn with_active_terminals<F: FnOnce(&mut WorktreeTerminals)>(&mut self, f: F) {
+        if let Some(id) = self.ui.active_worktree {
+            if let Some(ts) = self.terminals.get_mut(&id) {
+                f(ts);
+            }
+        }
+    }
+
+    fn close_active_terminal(&mut self) {
+        if let Some(id) = self.ui.active_worktree {
+            let drop_entry = self
+                .terminals
+                .get_mut(&id)
+                .map(|ts| ts.close_active())
+                .unwrap_or(true);
+            if drop_entry {
+                self.terminals.remove(&id);
+                self.ui.focus = FocusZone::Sidebar;
+            }
         }
     }
 
@@ -269,16 +415,16 @@ impl AppState {
         self.ui.expanded.remove(&name);
 
         // Drop terminals for the removed repo and shift indices for later repos.
-        let surviving: HashMap<WorktreeId, Terminal> = self
+        let surviving: HashMap<WorktreeId, WorktreeTerminals> = self
             .terminals
             .drain()
-            .filter_map(|((r, w), t)| {
+            .filter_map(|((r, w), ts)| {
                 if r == idx {
                     None
                 } else if r > idx {
-                    Some(((r - 1, w), t))
+                    Some(((r - 1, w), ts))
                 } else {
-                    Some(((r, w), t))
+                    Some(((r, w), ts))
                 }
             })
             .collect();
@@ -692,6 +838,34 @@ mod tests {
         };
         app.apply_persisted(persisted);
         assert_eq!(app.ui.active_worktree, None);
+    }
+
+    #[test]
+    fn worktree_terminals_tab_arithmetic() {
+        // We can't construct a real Terminal in tests, so exercise the
+        // bookkeeping methods on an empty-list fixture that starts with
+        // `scroll_offset=0` and `mode=Insert`.
+        let mut ts = WorktreeTerminals {
+            list: Vec::new(),
+            active: 0,
+            mode: TerminalMode::Insert,
+            scroll_offset: 0,
+        };
+        // next/prev on empty → no panic
+        ts.next_tab();
+        ts.prev_tab();
+        ts.toggle_scrollback();
+        assert_eq!(ts.mode, TerminalMode::Scrollback);
+        ts.scroll(5);
+        assert_eq!(ts.scroll_offset, 5);
+        ts.scroll(-20);
+        assert_eq!(ts.scroll_offset, 0);
+        ts.scroll_home();
+        assert!(ts.scroll_offset > 0);
+        ts.scroll_end();
+        assert_eq!(ts.scroll_offset, 0);
+        ts.toggle_scrollback();
+        assert_eq!(ts.mode, TerminalMode::Insert);
     }
 
     #[test]

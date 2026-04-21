@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use directories::ProjectDirs;
 
-#[allow(dead_code)] // fields consumed starting in PR 2 (config loading)
 pub struct AppPaths {
     pub config_file: PathBuf,
     pub state_file: PathBuf,

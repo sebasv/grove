@@ -1,11 +1,11 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{AppState, FocusZone};
+use crate::app::{AppState, FocusZone, TerminalMode, WorktreeTerminals};
 
 const DIVIDER: &str = "────────────────────────────────────────";
 
@@ -29,16 +29,58 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
     // Try to render a terminal first. If none, fall back to the informational
     // placeholder content.
     if let Some(id) = app.ui.active_worktree {
-        if let Some(term) = app.terminals.get(&id) {
-            if let Ok(parser) = term.parser.lock() {
-                frame.render_widget(PseudoTerminal::new(parser.screen()), inner);
-                return inner;
+        if let Some(ts) = app.terminals.get(&id) {
+            if !ts.list.is_empty() {
+                let layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(inner);
+                render_tab_bar(frame, layout[0], ts);
+                render_active_terminal(frame, layout[1], ts);
+                return layout[1];
             }
         }
     }
 
     render_placeholder(frame, inner, app);
     inner
+}
+
+fn render_tab_bar(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals) {
+    let mut spans = Vec::with_capacity(ts.list.len() * 2 + 1);
+    for i in 0..ts.list.len() {
+        let is_active = i == ts.active;
+        let marker = if is_active { "▸" } else { " " };
+        let mode_hint = if is_active && ts.mode == TerminalMode::Scrollback {
+            " ⇅"
+        } else {
+            ""
+        };
+        let label = format!(" {marker}{}{mode_hint} ", i + 1);
+        let style = if is_active {
+            Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        };
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        " + ",
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals) {
+    let Some(term) = ts.active_ref() else {
+        return;
+    };
+    let Ok(mut parser) = term.parser.lock() else {
+        return;
+    };
+    parser.set_scrollback(ts.scroll_offset);
+    frame.render_widget(PseudoTerminal::new(parser.screen()), area);
 }
 
 fn main_pane_title(app: &AppState) -> String {
