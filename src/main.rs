@@ -100,6 +100,12 @@ async fn run_cli() -> Result<ExitCode> {
 
     let config = Config::load_or_default(&config_path)?;
     let theme_name = config.theme.base;
+    if config.general.tmux_backing && !terminal::tmux_installed() {
+        eprintln!(
+            "warning: tmux_backing is enabled but `tmux` was not found on PATH; \
+             falling back to direct shell spawns"
+        );
+    }
     let mut app = AppState::load(config, config_path.clone())?;
     app.theme_name = theme_name;
     app.theme = theme::resolve(theme_name);
@@ -454,7 +460,12 @@ fn spawn_terminal_for(id: WorktreeId, app: &mut AppState, tx: &EventSender) {
         pixel_width: 0,
         pixel_height: 0,
     };
-    let term = match terminal::Terminal::spawn(&wt.path, size, id, tx.clone()) {
+    let tmux_session = if app.config.general.tmux_backing && terminal::tmux_installed() {
+        Some(terminal::tmux_session_for(&wt.path))
+    } else {
+        None
+    };
+    let term = match terminal::Terminal::spawn(&wt.path, size, id, tx.clone(), tmux_session) {
         Ok(t) => t,
         Err(err) => {
             log_to_file(&format!(

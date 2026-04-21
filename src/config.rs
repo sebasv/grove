@@ -44,6 +44,10 @@ pub struct General {
     /// When absent, worktrees are placed next to the repo (sibling strategy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_root: Option<PathBuf>,
+    /// When `true` and tmux is installed, embedded terminals run inside a
+    /// persistent tmux session so shells survive across grove restarts.
+    #[serde(default)]
+    pub tmux_backing: bool,
 }
 
 impl Default for General {
@@ -51,6 +55,7 @@ impl Default for General {
         Self {
             default_base_branch: default_base_branch(),
             worktree_root: None,
+            tmux_backing: false,
         }
     }
 }
@@ -142,6 +147,7 @@ mod tests {
             general: General {
                 default_base_branch: "main".to_string(),
                 worktree_root: None,
+                tmux_backing: false,
             },
             theme: ThemeConfig::default(),
             keys: crate::keymap::Keymap::default(),

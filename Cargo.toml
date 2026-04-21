@@ -1,6 +1,6 @@
 [package]
 name = "grove"
-version = "1.2.0"
+version = "1.5.0"
 edition = "2021"
 description = "A TUI for cultivating git repos, worktrees, and the work inside them"
 repository = "https://github.com/sebasv/grove"
