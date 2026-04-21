@@ -1,4 +1,5 @@
 mod app;
+mod async_evt;
 mod config;
 mod git;
 mod model;
@@ -14,13 +15,14 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::app::{AppMessage, AppState, Direction, Modal};
+use crate::async_evt::{Event, EventReceiver, EventSender};
 use crate::config::Config;
 use crate::paths::AppPaths;
 
@@ -43,7 +45,17 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    match run_cli() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("error: failed to start async runtime: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match rt.block_on(run_cli()) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -52,7 +64,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_cli() -> Result<ExitCode> {
+async fn run_cli() -> Result<ExitCode> {
     let cli = Cli::parse();
     let paths = AppPaths::resolve()?;
     let config_path = cli
@@ -80,7 +92,13 @@ fn run_cli() -> Result<ExitCode> {
 
     install_panic_hook();
     let mut tui = init_terminal()?;
-    let result = run(&mut tui, &mut app);
+
+    let (tx, rx) = async_evt::channel();
+    async_evt::spawn_terminal_reader(tx.clone());
+    let _watchers = spawn_watchers(&app, &tx);
+    refresh_all_statuses(&app, &tx);
+
+    let result = run(&mut tui, &mut app, rx, tx).await;
     restore_terminal()?;
     result?;
 
@@ -90,19 +108,70 @@ fn run_cli() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run(tui: &mut Tui, app: &mut AppState) -> Result<()> {
+async fn run(
+    tui: &mut Tui,
+    app: &mut AppState,
+    mut rx: EventReceiver,
+    tx: EventSender,
+) -> Result<()> {
     loop {
         tui.draw(|frame| ui::render(frame, app))?;
 
-        if let Event::Key(key) = event::read()? {
-            let msg = key_to_message(key, app.ui.modal.as_ref());
-            app.update(msg);
-            if app.should_quit {
-                break;
+        let Some(event) = rx.recv().await else {
+            break;
+        };
+        match event {
+            Event::Input(key) => {
+                let msg = key_to_message(key, app.ui.modal.as_ref());
+                if matches!(msg, AppMessage::RefreshAll) {
+                    refresh_all_statuses(app, &tx);
+                } else {
+                    app.update(msg);
+                }
+                if app.should_quit {
+                    break;
+                }
+            }
+            Event::RepoDirty(repo_idx) => {
+                refresh_repo_statuses(repo_idx, app, &tx);
+            }
+            Event::StatusReady(id, status) => {
+                app.set_worktree_status(id, status);
             }
         }
     }
     Ok(())
+}
+
+fn spawn_watchers(app: &AppState, tx: &EventSender) -> Vec<async_evt::RepoWatcher> {
+    let mut watchers = Vec::new();
+    for (i, repo) in app.repos.iter().enumerate() {
+        match async_evt::spawn_repo_watcher(i, repo.root_path.clone(), tx.clone()) {
+            Ok(w) => watchers.push(w),
+            Err(err) => {
+                // Watching is best-effort; user can still refresh with `r`.
+                eprintln!("warning: watch failed for {}: {err:#}", repo.name);
+            }
+        }
+    }
+    watchers
+}
+
+fn refresh_all_statuses(app: &AppState, tx: &EventSender) {
+    for (r, repo) in app.repos.iter().enumerate() {
+        for (w, wt) in repo.worktrees.iter().enumerate() {
+            async_evt::spawn_status_refresh((r, w), wt.path.clone(), tx.clone());
+        }
+    }
+}
+
+fn refresh_repo_statuses(repo_idx: usize, app: &AppState, tx: &EventSender) {
+    let Some(repo) = app.repos.get(repo_idx) else {
+        return;
+    };
+    for (w, wt) in repo.worktrees.iter().enumerate() {
+        async_evt::spawn_status_refresh((repo_idx, w), wt.path.clone(), tx.clone());
+    }
 }
 
 fn key_to_message(key: KeyEvent, modal: Option<&Modal>) -> AppMessage {
@@ -128,6 +197,7 @@ fn default_keys(key: KeyEvent) -> AppMessage {
         KeyCode::Enter => AppMessage::Activate,
         KeyCode::Char('a') => AppMessage::OpenAddRepo,
         KeyCode::Char('R') => AppMessage::OpenConfirmRemoveRepo,
+        KeyCode::Char('r') => AppMessage::RefreshAll,
         _ => AppMessage::NoOp,
     }
 }

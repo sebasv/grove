@@ -1,6 +1,6 @@
 ---
 source: src/ui/help.rs
-assertion_line: 48
+assertion_line: 49
 expression: terminal.backend()
 ---
 " PROJECTS                                                             "
@@ -13,13 +13,13 @@ expression: terminal.backend()
 " ▼ dotfi│    Enter             activate worktree             │        "
 "   ○ mai│    a                 add repository                │        "
 "   ● wip│    R                 remove repository             │        "
-"        │                                                    │        "
-" ───────│  Global                                            │        "
-" [a] Add│    ?                 toggle this help              │        "
-" [w] New│    q                 quit                          │        "
-"        │                                                    │        "
-" j/k  na│  (Esc or ? to close)                               │        "
-" ?    he│                                                    │        "
+"        │    r                 refresh git status            │        "
+" ───────│                                                    │        "
+" [a] Add│  Global                                            │        "
+" [w] New│    ?                 toggle this help              │        "
+"        │    q                 quit                          │        "
+" j/k  na│                                                    │        "
+" ?    he│  (Esc or ? to close)                               │        "
 " q    qu└────────────────────────────────────────────────────┘        "
 "                                                                      "
 "                                                                      "

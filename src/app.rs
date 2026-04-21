@@ -68,6 +68,7 @@ pub enum AppMessage {
     InputEnd,
     SubmitModal,
     CloseModal,
+    RefreshAll,
     Quit,
     NoOp,
 }
@@ -117,8 +118,20 @@ impl AppState {
             AppMessage::InputEnd => self.with_add_repo_input(TextInput::end),
             AppMessage::SubmitModal => self.submit_modal(),
             AppMessage::CloseModal => self.ui.modal = None,
+            // RefreshAll is handled outside update() because it spawns tasks; the
+            // no-op here keeps the match exhaustive.
+            AppMessage::RefreshAll => {}
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
+        }
+    }
+
+    pub fn set_worktree_status(&mut self, id: (usize, usize), status: crate::model::WorktreeStatus) {
+        let (r, w) = id;
+        if let Some(repo) = self.repos.get_mut(r) {
+            if let Some(wt) = repo.worktrees.get_mut(w) {
+                wt.status = Some(status);
+            }
         }
     }
 
@@ -452,16 +465,19 @@ impl AppState {
                             branch: "main".to_string(),
                             path: PathBuf::from("/Users/sebas/dev/grove"),
                             is_primary: true,
+                            status: None,
                         },
                         Worktree {
                             branch: "feat/sidebar".to_string(),
                             path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
                             is_primary: false,
+                            status: None,
                         },
                         Worktree {
                             branch: "fix/deps".to_string(),
                             path: PathBuf::from("/Users/sebas/dev/grove-fix-deps"),
                             is_primary: false,
+                            status: None,
                         },
                     ],
                 },
@@ -474,11 +490,13 @@ impl AppState {
                             branch: "main".to_string(),
                             path: PathBuf::from("/Users/sebas/dotfiles"),
                             is_primary: true,
+                            status: None,
                         },
                         Worktree {
                             branch: "wip/zsh".to_string(),
                             path: PathBuf::from("/Users/sebas/dotfiles-wip-zsh"),
                             is_primary: false,
+                            status: None,
                         },
                     ],
                 },
