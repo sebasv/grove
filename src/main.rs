@@ -8,7 +8,7 @@ mod state;
 mod terminal;
 mod ui;
 
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::panic;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -223,6 +223,21 @@ fn ensure_terminal_for_active(app: &mut AppState, tx: &EventSender) {
     spawn_terminal_for(id, app, tx);
 }
 
+fn log_to_file(msg: &str) {
+    if let Ok(paths) = AppPaths::resolve() {
+        if let Some(parent) = paths.log_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&paths.log_file)
+        {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+}
+
 fn spawn_terminal_for(id: WorktreeId, app: &mut AppState, tx: &EventSender) {
     let Some(wt) = app
         .repos
@@ -237,8 +252,17 @@ fn spawn_terminal_for(id: WorktreeId, app: &mut AppState, tx: &EventSender) {
         pixel_width: 0,
         pixel_height: 0,
     };
-    let Ok(term) = terminal::Terminal::spawn(&wt.path, size, id, tx.clone()) else {
-        return;
+    let term = match terminal::Terminal::spawn(&wt.path, size, id, tx.clone()) {
+        Ok(t) => t,
+        Err(err) => {
+            log_to_file(&format!(
+                "terminal spawn failed for worktree ({}, {}) at {}: {err:#}",
+                id.0,
+                id.1,
+                wt.path.display()
+            ));
+            return;
+        }
     };
     if let Some(ts) = app.terminals.get_mut(&id) {
         ts.push(term);
@@ -309,12 +333,33 @@ fn main_reserved_keys(key: KeyEvent) -> Option<AppMessage> {
     if ctrl && matches!(key.code, KeyCode::Char('\\')) {
         return Some(AppMessage::ToggleScrollback);
     }
+    // Ctrl+t: new terminal tab (Ctrl+W: close). Ctrl beats Alt here because
+    // macOS terminals often swallow Option combos or remap them to Unicode.
+    if ctrl && matches!(key.code, KeyCode::Char('t')) {
+        return Some(AppMessage::NewTerminal);
+    }
+    if ctrl && matches!(key.code, KeyCode::Char('w')) {
+        return Some(AppMessage::CloseTerminal);
+    }
     if alt {
         return match key.code {
             KeyCode::Char('t') => Some(AppMessage::NewTerminal),
             KeyCode::Char('w') => Some(AppMessage::CloseTerminal),
             KeyCode::Char('h') | KeyCode::Left => Some(AppMessage::PrevTab),
             KeyCode::Char('l') | KeyCode::Right => Some(AppMessage::NextTab),
+            _ => None,
+        };
+    }
+    // macOS terminals that don't pass Option as Meta send Unicode characters
+    // instead: Option+t → '†', Option+w → '∑', Option+h → '˙', Option+l → '¬'.
+    // Map these to the same actions so the shortcuts work with default terminal
+    // settings on macOS.
+    if key.modifiers.is_empty() {
+        return match key.code {
+            KeyCode::Char('†') => Some(AppMessage::NewTerminal),
+            KeyCode::Char('∑') => Some(AppMessage::CloseTerminal),
+            KeyCode::Char('˙') => Some(AppMessage::PrevTab),
+            KeyCode::Char('¬') => Some(AppMessage::NextTab),
             _ => None,
         };
     }

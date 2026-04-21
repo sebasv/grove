@@ -7,7 +7,7 @@ use ratatui::Frame;
 use crate::ui::centered_rect;
 
 pub fn render(frame: &mut Frame, area: Rect) {
-    let modal = centered_rect(56, 18, area);
+    let modal = centered_rect(56, 26, area);
     frame.render_widget(Clear, modal);
 
     let block = Block::default().borders(Borders::ALL).title(" Help ");
@@ -21,6 +21,13 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    a                 add repository"),
         Line::from("    R                 remove repository"),
         Line::from("    r                 refresh git status"),
+        Line::from(""),
+        Line::styled("  Main (terminal)", bold),
+        Line::from("    Enter             open terminal for worktree"),
+        Line::from("    Ctrl+t            new tab"),
+        Line::from("    Ctrl+w            close tab"),
+        Line::from("    Alt+h / Alt+l     previous / next tab"),
+        Line::from("    Ctrl+\\            toggle scrollback mode"),
         Line::from(""),
         Line::styled("  Global", bold),
         Line::from("    Ctrl+Space        cycle focus (sidebar ↔ main)"),
