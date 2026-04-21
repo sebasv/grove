@@ -20,6 +20,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    Enter             activate worktree"),
         Line::from("    a                 add repository"),
         Line::from("    R                 remove repository"),
+        Line::from("    r                 refresh git status"),
         Line::from(""),
         Line::styled("  Global", bold),
         Line::from("    ?                 toggle this help"),
