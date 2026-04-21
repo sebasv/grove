@@ -180,6 +180,47 @@ fn collect_diff(diff: &git2::Diff<'_>, staged: bool, out: &mut Vec<DiffFile>) {
     out.extend(scratch.into_inner());
 }
 
+pub fn create_worktree(
+    repo_root: &Path,
+    branch: &str,
+    path: &Path,
+    base: &str,
+) -> Result<()> {
+    run_git_cmd(
+        repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            &path.display().to_string(),
+            base,
+        ],
+    )
+}
+
+pub fn remove_worktree(repo_root: &Path, worktree_path: &Path) -> Result<()> {
+    run_git_cmd(
+        repo_root,
+        &["worktree", "remove", &worktree_path.display().to_string()],
+    )
+}
+
+pub fn derive_worktree_path(repo_root: &Path, repo_name: &str, branch: &str) -> PathBuf {
+    let parent = repo_root
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let sanitised = branch.replace('/', "-");
+    let mut candidate = parent.join(format!("{repo_name}-{sanitised}"));
+    let mut counter = 2;
+    while candidate.exists() {
+        candidate = parent.join(format!("{repo_name}-{sanitised}-{counter}"));
+        counter += 1;
+    }
+    candidate
+}
+
 pub fn stage_path(worktree_path: &Path, file_path: &Path) -> Result<()> {
     run_git_cmd(worktree_path, &["add", "--", &file_path.display().to_string()])
 }
@@ -464,6 +505,31 @@ mod tests {
         let s = compute_status(&dir).unwrap();
         assert_eq!(s.ahead, 0);
         assert_eq!(s.behind, 0);
+    }
+
+    #[test]
+    fn create_and_remove_worktree_round_trip() {
+        let dir = temp_dir();
+        init_repo(&dir);
+        let new_path = derive_worktree_path(&dir, "parent", "feat/x");
+        create_worktree(&dir, "feat/x", &new_path, "main").unwrap();
+        let wts = list_worktrees(&dir).unwrap();
+        assert_eq!(wts.len(), 2);
+        assert!(wts.iter().any(|w| w.branch == "feat/x"));
+
+        remove_worktree(&dir, &new_path).unwrap();
+        let wts = list_worktrees(&dir).unwrap();
+        assert_eq!(wts.len(), 1);
+    }
+
+    #[test]
+    fn derive_worktree_path_avoids_collisions() {
+        let dir = temp_dir();
+        let first = derive_worktree_path(&dir, "repo", "branch");
+        std::fs::create_dir_all(&first).unwrap();
+        let second = derive_worktree_path(&dir, "repo", "branch");
+        assert_ne!(first, second);
+        assert!(second.to_string_lossy().ends_with("-2"));
     }
 
     #[test]

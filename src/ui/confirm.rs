@@ -26,6 +26,26 @@ pub fn render_remove_repo(frame: &mut Frame, area: Rect, repo_name: &str) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+pub fn render_remove_worktree(frame: &mut Frame, area: Rect, branch: &str) {
+    let modal_area = centered_rect(58, 8, area);
+    frame.render_widget(Clear, modal_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Remove worktree? ");
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(format!("  Remove worktree for \"{branch}\"?")),
+        Line::from("  (runs `git worktree remove`; branch is kept)"),
+        Line::from(""),
+        Line::from("  y/Enter confirm  ·  n/Esc cancel"),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::{backend::TestBackend, Terminal};

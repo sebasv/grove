@@ -4,7 +4,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::AddRepoModal;
+use crate::app::{AddRepoModal, NewWorktreeModal};
 use crate::ui::{centered_rect, text_input};
 
 pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal) {
@@ -47,6 +47,50 @@ pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal) {
 
     frame.render_widget(
         Paragraph::new("  Enter to add  ·  Esc to cancel"),
+        rows[6],
+    );
+}
+
+pub fn render_new_worktree(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &NewWorktreeModal,
+    repo_name: &str,
+) {
+    let modal_area = centered_rect(62, 11, area);
+    frame.render_widget(Clear, modal_area);
+    let title = format!(" New worktree in {repo_name} ");
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    frame.render_widget(Paragraph::new("  Branch name:"), rows[1]);
+
+    let input_area = Rect {
+        x: rows[2].x + 2,
+        width: rows[2].width.saturating_sub(2),
+        ..rows[2]
+    };
+    text_input::render(frame, input_area, &modal.input);
+
+    if let Some(err) = &modal.error {
+        let line = Line::styled(format!("  ! {err}"), Style::default().fg(Color::Red));
+        frame.render_widget(Paragraph::new(line), rows[4]);
+    }
+
+    frame.render_widget(
+        Paragraph::new("  Enter to create  ·  Esc to cancel"),
         rows[6],
     );
 }

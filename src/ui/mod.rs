@@ -29,9 +29,26 @@ pub fn render(frame: &mut Frame, app: &AppState) -> Rect {
         match modal {
             Modal::Help => help::render(frame, frame.area()),
             Modal::AddRepo(state) => add_repo::render(frame, frame.area(), state),
+            Modal::NewWorktree(state) => {
+                let repo_name = app
+                    .repos
+                    .get(state.repo_idx)
+                    .map(|r| r.name.as_str())
+                    .unwrap_or("?");
+                add_repo::render_new_worktree(frame, frame.area(), state, repo_name);
+            }
             Modal::ConfirmRemoveRepo { repo_idx } => {
                 if let Some(repo) = app.repos.get(*repo_idx) {
                     confirm::render_remove_repo(frame, frame.area(), &repo.name);
+                }
+            }
+            Modal::ConfirmRemoveWorktree { id } => {
+                if let Some(wt) = app
+                    .repos
+                    .get(id.0)
+                    .and_then(|r| r.worktrees.get(id.1))
+                {
+                    confirm::render_remove_worktree(frame, frame.area(), &wt.branch);
                 }
             }
         }
