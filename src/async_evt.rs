@@ -17,6 +17,7 @@ pub enum Event {
     Input(KeyEvent),
     RepoDirty(RepoId),
     StatusReady(WorktreeId, WorktreeStatus),
+    DiffReady(WorktreeId, Vec<crate::git::DiffFile>),
     /// A terminal's reader thread advanced its vt100 parser state; trigger a
     /// repaint.  The active-worktree's parser is the one we render, so we
     /// don't need to know which terminal emitted the event.
@@ -62,6 +63,13 @@ pub fn spawn_status_refresh(id: WorktreeId, path: PathBuf, tx: EventSender) {
         if let Ok(status) = crate::git::compute_status(&path) {
             let _ = tx.send(Event::StatusReady(id, status));
         }
+    });
+}
+
+pub fn spawn_diff_refresh(id: WorktreeId, path: PathBuf, tx: EventSender) {
+    tokio::task::spawn_blocking(move || {
+        let files = crate::git::compute_local_diff(&path).unwrap_or_default();
+        let _ = tx.send(Event::DiffReady(id, files));
     });
 }
 

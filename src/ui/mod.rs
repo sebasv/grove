@@ -1,6 +1,7 @@
 mod add_repo;
 mod badges;
 mod confirm;
+pub mod diff;
 mod help;
 mod main_pane;
 mod sidebar;
