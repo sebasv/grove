@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, app: &AppState) -> Rect {
 
     if let Some(modal) = &app.ui.modal {
         match modal {
-            Modal::Help => help::render(frame, frame.area()),
+            Modal::Help => help::render(frame, frame.area(), app.ui.help_scroll),
             Modal::AddRepo(state) => add_repo::render(frame, frame.area(), state),
             Modal::NewWorktree(state) => {
                 let repo_name = app
@@ -50,6 +50,12 @@ pub fn render(frame: &mut Frame, app: &AppState) -> Rect {
                 {
                     confirm::render_remove_worktree(frame, frame.area(), &wt.branch);
                 }
+            }
+            Modal::ConfirmDeleteBranch { branch, pr_number, .. } => {
+                confirm::render_delete_branch(frame, frame.area(), branch, *pr_number);
+            }
+            Modal::ForceDeleteBranch { branch, .. } => {
+                confirm::render_force_delete_branch(frame, frame.area(), branch);
             }
         }
     }

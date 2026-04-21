@@ -370,6 +370,87 @@ fn ahead_behind(repo: &Repository) -> Result<(usize, usize)> {
     Ok((ahead, behind))
 }
 
+#[derive(Debug, Clone)]
+pub struct BranchEntry {
+    pub name: String,
+    pub remote: Option<String>,
+}
+
+impl BranchEntry {
+    pub fn display(&self) -> String {
+        match &self.remote {
+            None => self.name.clone(),
+            Some(r) => format!("{r}/{}", self.name),
+        }
+    }
+
+    pub fn is_remote_only(&self) -> bool {
+        self.remote.is_some()
+    }
+}
+
+pub fn list_branches(repo_root: &Path) -> Result<Vec<BranchEntry>> {
+    let repo = Repository::open(repo_root)
+        .with_context(|| format!("opening {}", repo_root.display()))?;
+    let mut out = Vec::new();
+    let mut local_names = std::collections::HashSet::new();
+
+    for b in repo.branches(Some(BranchType::Local))? {
+        let (branch, _) = b?;
+        if let Some(name) = branch.name()? {
+            local_names.insert(name.to_string());
+            out.push(BranchEntry { name: name.to_string(), remote: None });
+        }
+    }
+
+    for b in repo.branches(Some(BranchType::Remote))? {
+        let (branch, _) = b?;
+        if let Some(full) = branch.name()? {
+            if let Some((remote, branch_name)) = full.split_once('/') {
+                if branch_name != "HEAD" && !local_names.contains(branch_name) {
+                    out.push(BranchEntry {
+                        name: branch_name.to_string(),
+                        remote: Some(remote.to_string()),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+pub fn create_worktree_from_existing(repo_root: &Path, branch: &str, path: &Path) -> Result<()> {
+    run_git_cmd(repo_root, &["worktree", "add", &path.display().to_string(), branch])
+}
+
+pub fn create_worktree_from_remote(
+    repo_root: &Path,
+    remote: &str,
+    branch_name: &str,
+    local_name: &str,
+    path: &Path,
+) -> Result<()> {
+    let remote_ref = format!("{remote}/{branch_name}");
+    run_git_cmd(
+        repo_root,
+        &[
+            "worktree", "add",
+            "--track", "-b", local_name,
+            &path.display().to_string(),
+            &remote_ref,
+        ],
+    )
+}
+
+pub fn delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
+    run_git_cmd(repo_root, &["branch", "-d", branch])
+}
+
+pub fn force_delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
+    run_git_cmd(repo_root, &["branch", "-D", branch])
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};

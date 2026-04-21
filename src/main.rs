@@ -25,7 +25,7 @@ use crossterm::{
 use portable_pty::PtySize;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{AppMessage, AppState, Direction, FocusZone, Modal};
+use crate::app::{AppMessage, AppState, Direction, FocusZone, Modal, NewWorktreeModal};
 use crate::async_evt::{Event, EventReceiver, EventSender, WorktreeId};
 use crate::config::Config;
 use crate::paths::AppPaths;
@@ -346,9 +346,11 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
         return InputAction::Message(match modal {
             Modal::Help => help_keys(key),
             Modal::AddRepo(_) => add_repo_keys(key),
-            Modal::NewWorktree(_) => add_repo_keys(key), // same TextInput handling
+            Modal::NewWorktree(m) => new_worktree_keys(key, m),
             Modal::ConfirmRemoveRepo { .. }
-            | Modal::ConfirmRemoveWorktree { .. } => confirm_keys(key),
+            | Modal::ConfirmRemoveWorktree { .. }
+            | Modal::ConfirmDeleteBranch { .. }
+            | Modal::ForceDeleteBranch { .. } => confirm_keys(key),
         });
     }
 
@@ -594,6 +596,8 @@ fn default_keys(key: KeyEvent) -> AppMessage {
 fn help_keys(key: KeyEvent) -> AppMessage {
     match key.code {
         KeyCode::Char('?') | KeyCode::Esc => AppMessage::CloseModal,
+        KeyCode::Char('j') | KeyCode::Down => AppMessage::HelpScrollDown,
+        KeyCode::Char('k') | KeyCode::Up => AppMessage::HelpScrollUp,
         _ => AppMessage::NoOp,
     }
 }
@@ -602,6 +606,9 @@ fn add_repo_keys(key: KeyEvent) -> AppMessage {
     match key.code {
         KeyCode::Esc => AppMessage::CloseModal,
         KeyCode::Enter => AppMessage::SubmitModal,
+        KeyCode::Up => AppMessage::CompletionUp,
+        KeyCode::Down => AppMessage::CompletionDown,
+        KeyCode::Tab => AppMessage::CompletionAccept,
         KeyCode::Backspace => AppMessage::InputBackspace,
         KeyCode::Delete => AppMessage::InputDelete,
         KeyCode::Left => AppMessage::InputCursorLeft,
@@ -612,6 +619,35 @@ fn add_repo_keys(key: KeyEvent) -> AppMessage {
             AppMessage::InputChar(c)
         }
         _ => AppMessage::NoOp,
+    }
+}
+
+fn new_worktree_keys(key: KeyEvent, modal: &NewWorktreeModal) -> AppMessage {
+    use crate::app::NewWorktreeMode;
+    match modal.mode {
+        NewWorktreeMode::PickBranch => match key.code {
+            KeyCode::Char('j') | KeyCode::Down => AppMessage::BranchCursorDown,
+            KeyCode::Char('k') | KeyCode::Up => AppMessage::BranchCursorUp,
+            KeyCode::Enter => AppMessage::SubmitModal,
+            KeyCode::Tab => AppMessage::SwitchWorktreeMode,
+            KeyCode::Esc => AppMessage::CloseModal,
+            _ => AppMessage::NoOp,
+        },
+        NewWorktreeMode::NewBranch => match key.code {
+            KeyCode::Esc => AppMessage::CloseModal,
+            KeyCode::Enter => AppMessage::SubmitModal,
+            KeyCode::Tab if !modal.branches.is_empty() => AppMessage::SwitchWorktreeMode,
+            KeyCode::Backspace => AppMessage::InputBackspace,
+            KeyCode::Delete => AppMessage::InputDelete,
+            KeyCode::Left => AppMessage::InputCursorLeft,
+            KeyCode::Right => AppMessage::InputCursorRight,
+            KeyCode::Home => AppMessage::InputHome,
+            KeyCode::End => AppMessage::InputEnd,
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                AppMessage::InputChar(c)
+            }
+            _ => AppMessage::NoOp,
+        },
     }
 }
 
