@@ -1,6 +1,7 @@
 mod help;
 mod main_pane;
 mod sidebar;
+pub mod text_input;
 
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
