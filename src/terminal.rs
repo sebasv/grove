@@ -23,18 +23,35 @@ impl Terminal {
         size: PtySize,
         wt_id: WorktreeId,
         tx: EventSender,
+        tmux_session: Option<String>,
     ) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(size)
             .context("opening pty")?;
 
-        let shell = std::env::var_os("SHELL")
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/bin/sh".to_string());
-
-        let mut cmd = CommandBuilder::new(shell);
-        cmd.arg("-l");
+        let mut cmd = if let Some(session) = tmux_session {
+            // Attach if session exists, otherwise create it; `-D` kicks any
+            // other client so this grove owns the session.
+            let mut c = CommandBuilder::new("tmux");
+            c.args([
+                "new-session",
+                "-A",
+                "-D",
+                "-s",
+                &session,
+                "-c",
+                &cwd.display().to_string(),
+            ]);
+            c
+        } else {
+            let shell = std::env::var_os("SHELL")
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "/bin/sh".to_string());
+            let mut c = CommandBuilder::new(shell);
+            c.arg("-l");
+            c
+        };
         cmd.cwd(cwd);
         if let Some(term) = std::env::var_os("TERM") {
             cmd.env("TERM", term);
@@ -100,6 +117,25 @@ impl Terminal {
         self.last_size = size;
         Ok(())
     }
+}
+
+/// Deterministic tmux session name from a worktree path.  Uses the stdlib
+/// hasher — stable within a single Rust toolchain version; documented in the
+/// spec as "may change across toolchain upgrades."
+pub fn tmux_session_for(worktree_path: &Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    worktree_path.hash(&mut h);
+    format!("grove-{:016x}", h.finish())
+}
+
+pub fn tmux_installed() -> bool {
+    std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 impl Drop for Terminal {
@@ -309,5 +345,16 @@ mod tests {
             key_to_pty_bytes(key(KeyCode::F(5))),
             Some(b"\x1b[15~".to_vec())
         );
+    }
+
+    #[test]
+    fn tmux_session_name_is_stable_per_path() {
+        use std::path::Path;
+        let a1 = tmux_session_for(Path::new("/Users/sebas/grove"));
+        let a2 = tmux_session_for(Path::new("/Users/sebas/grove"));
+        assert_eq!(a1, a2);
+        let b = tmux_session_for(Path::new("/Users/sebas/other"));
+        assert_ne!(a1, b);
+        assert!(a1.starts_with("grove-"));
     }
 }
