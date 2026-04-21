@@ -179,12 +179,31 @@ pub enum Modal {
     Help,
     AddRepo(AddRepoModal),
     ConfirmRemoveRepo { repo_idx: usize },
+    NewWorktree(NewWorktreeModal),
+    ConfirmRemoveWorktree { id: WorktreeId },
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct AddRepoModal {
     pub input: TextInput,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewWorktreeModal {
+    pub input: TextInput,
+    pub error: Option<String>,
+    pub repo_idx: usize,
+}
+
+impl NewWorktreeModal {
+    pub fn for_repo(repo_idx: usize) -> Self {
+        Self {
+            input: TextInput::default(),
+            error: None,
+            repo_idx,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -202,6 +221,8 @@ pub enum AppMessage {
     ToggleHelp,
     OpenAddRepo,
     OpenConfirmRemoveRepo,
+    OpenNewWorktree,
+    OpenConfirmRemoveWorktree,
     InputChar(char),
     InputBackspace,
     InputDelete,
@@ -276,6 +297,8 @@ impl AppState {
             AppMessage::ToggleHelp => self.toggle_help(),
             AppMessage::OpenAddRepo => self.open_add_repo(),
             AppMessage::OpenConfirmRemoveRepo => self.open_confirm_remove_repo(),
+            AppMessage::OpenNewWorktree => self.open_new_worktree(),
+            AppMessage::OpenConfirmRemoveWorktree => self.open_confirm_remove_worktree(),
             AppMessage::InputChar(c) => self.with_add_repo_input(|i| i.insert_char(c)),
             AppMessage::InputBackspace => self.with_add_repo_input(TextInput::backspace),
             AppMessage::InputDelete => self.with_add_repo_input(TextInput::delete),
@@ -441,6 +464,43 @@ impl AppState {
         self.ui.modal = Some(Modal::AddRepo(AddRepoModal::default()));
     }
 
+    fn open_new_worktree(&mut self) {
+        if self.ui.modal.is_some() {
+            return;
+        }
+        let repo_idx = match self.ui.cursor {
+            Some(SidebarCursor::Repo(i)) => i,
+            Some(SidebarCursor::Worktree { repo, .. }) => repo,
+            None => return,
+        };
+        if repo_idx >= self.repos.len() {
+            return;
+        }
+        self.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal::for_repo(repo_idx)));
+    }
+
+    fn open_confirm_remove_worktree(&mut self) {
+        if self.ui.modal.is_some() {
+            return;
+        }
+        let Some(SidebarCursor::Worktree { repo, worktree }) = self.ui.cursor else {
+            return;
+        };
+        // Refuse to remove the primary checkout.
+        if self
+            .repos
+            .get(repo)
+            .and_then(|r| r.worktrees.get(worktree))
+            .map(|wt| wt.is_primary)
+            .unwrap_or(true)
+        {
+            return;
+        }
+        self.ui.modal = Some(Modal::ConfirmRemoveWorktree {
+            id: (repo, worktree),
+        });
+    }
+
     fn open_confirm_remove_repo(&mut self) {
         if self.ui.modal.is_some() {
             return;
@@ -460,9 +520,16 @@ impl AppState {
     where
         F: FnOnce(&mut TextInput),
     {
-        if let Some(Modal::AddRepo(m)) = &mut self.ui.modal {
-            f(&mut m.input);
-            m.error = None;
+        match &mut self.ui.modal {
+            Some(Modal::AddRepo(m)) => {
+                f(&mut m.input);
+                m.error = None;
+            }
+            Some(Modal::NewWorktree(m)) => {
+                f(&mut m.input);
+                m.error = None;
+            }
+            _ => {}
         }
     }
 
@@ -482,10 +549,139 @@ impl AppState {
                     eprintln!("warning: failed to remove repo: {err:#}");
                 }
             }
+            Some(Modal::NewWorktree(m)) => {
+                let branch = m.input.value().trim().to_string();
+                if let Err(err) = self.try_create_worktree(m.repo_idx, &branch) {
+                    self.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal {
+                        input: m.input,
+                        error: Some(format!("{err:#}")),
+                        repo_idx: m.repo_idx,
+                    }));
+                }
+            }
+            Some(Modal::ConfirmRemoveWorktree { id }) => {
+                if let Err(err) = self.try_remove_worktree(id) {
+                    eprintln!("warning: failed to remove worktree: {err:#}");
+                }
+            }
             other => {
                 self.ui.modal = other;
             }
         }
+    }
+
+    fn try_create_worktree(&mut self, repo_idx: usize, branch: &str) -> Result<()> {
+        if branch.is_empty() {
+            anyhow::bail!("branch name cannot be empty");
+        }
+        let Some(repo) = self.repos.get(repo_idx) else {
+            anyhow::bail!("repo not found");
+        };
+        let path =
+            git::derive_worktree_path(&repo.root_path, &repo.name, branch);
+        git::create_worktree(&repo.root_path, branch, &path, &repo.base_branch)?;
+
+        // Re-list worktrees for the repo so the new one appears.
+        let new_list = git::list_worktrees(&self.repos[repo_idx].root_path)?;
+        self.repos[repo_idx].worktrees = new_list;
+        // Move cursor to the newly created worktree (last in list).
+        let last = self.repos[repo_idx].worktrees.len().saturating_sub(1);
+        self.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: repo_idx,
+            worktree: last,
+        });
+        Ok(())
+    }
+
+    fn try_remove_worktree(&mut self, id: WorktreeId) -> Result<()> {
+        let (r, w) = id;
+        let Some(repo) = self.repos.get(r) else {
+            return Ok(());
+        };
+        let Some(wt) = repo.worktrees.get(w) else {
+            return Ok(());
+        };
+        if wt.is_primary {
+            anyhow::bail!("refusing to remove primary checkout");
+        }
+        let wt_path = wt.path.clone();
+        let repo_root = repo.root_path.clone();
+        git::remove_worktree(&repo_root, &wt_path)?;
+
+        // Re-list worktrees for the repo.
+        let new_list = git::list_worktrees(&repo_root)?;
+        self.repos[r].worktrees = new_list;
+
+        // Drop any Terminal / Diff state for this specific worktree index.
+        // Worktrees later in the list shift down by one.
+        let old_len = self.terminals.keys().filter(|(rr, _)| *rr == r).count();
+        let surviving: HashMap<WorktreeId, WorktreeTerminals> = self
+            .terminals
+            .drain()
+            .filter_map(|((rr, ww), ts)| {
+                if rr == r && ww == w {
+                    None
+                } else if rr == r && ww > w {
+                    Some(((rr, ww - 1), ts))
+                } else {
+                    Some(((rr, ww), ts))
+                }
+            })
+            .collect();
+        self.terminals = surviving;
+        let _ = old_len;
+
+        // Similarly shift diffs & main_views.
+        let diffs: HashMap<WorktreeId, DiffState> = self
+            .diffs
+            .drain()
+            .filter_map(|((rr, ww), d)| {
+                if rr == r && ww == w {
+                    None
+                } else if rr == r && ww > w {
+                    Some(((rr, ww - 1), d))
+                } else {
+                    Some(((rr, ww), d))
+                }
+            })
+            .collect();
+        self.diffs = diffs;
+        let views: HashMap<WorktreeId, MainView> = self
+            .main_views
+            .drain()
+            .filter_map(|((rr, ww), v)| {
+                if rr == r && ww == w {
+                    None
+                } else if rr == r && ww > w {
+                    Some(((rr, ww - 1), v))
+                } else {
+                    Some(((rr, ww), v))
+                }
+            })
+            .collect();
+        self.main_views = views;
+
+        self.ui.active_worktree = self.ui.active_worktree.and_then(|(rr, ww)| {
+            if rr == r && ww == w {
+                None
+            } else if rr == r && ww > w {
+                Some((rr, ww - 1))
+            } else {
+                Some((rr, ww))
+            }
+        });
+
+        // Move cursor sensibly.
+        if self.repos[r].worktrees.is_empty() {
+            self.ui.cursor = Some(SidebarCursor::Repo(r));
+        } else {
+            let new_w = w.min(self.repos[r].worktrees.len() - 1);
+            self.ui.cursor = Some(SidebarCursor::Worktree {
+                repo: r,
+                worktree: new_w,
+            });
+        }
+        Ok(())
     }
 
     fn try_add_repo(&mut self, raw: &str) -> Result<()> {

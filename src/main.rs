@@ -335,7 +335,9 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
         return InputAction::Message(match modal {
             Modal::Help => help_keys(key),
             Modal::AddRepo(_) => add_repo_keys(key),
-            Modal::ConfirmRemoveRepo { .. } => confirm_keys(key),
+            Modal::NewWorktree(_) => add_repo_keys(key), // same TextInput handling
+            Modal::ConfirmRemoveRepo { .. }
+            | Modal::ConfirmRemoveWorktree { .. } => confirm_keys(key),
         });
     }
 
@@ -571,6 +573,8 @@ fn default_keys(key: KeyEvent) -> AppMessage {
         KeyCode::Enter => AppMessage::Activate,
         KeyCode::Char('a') => AppMessage::OpenAddRepo,
         KeyCode::Char('R') => AppMessage::OpenConfirmRemoveRepo,
+        KeyCode::Char('w') => AppMessage::OpenNewWorktree,
+        KeyCode::Char('W') => AppMessage::OpenConfirmRemoveWorktree,
         KeyCode::Char('r') => AppMessage::RefreshAll,
         _ => AppMessage::NoOp,
     }
