@@ -31,8 +31,6 @@ pub struct AppState {
 pub struct LayoutCache {
     pub sidebar: ratatui::layout::Rect,
     pub main: ratatui::layout::Rect,
-    /// Reserved for click-to-switch-tab in a later patch.
-    #[allow(dead_code)]
     pub tab_bar: Option<ratatui::layout::Rect>,
 }
 
@@ -718,6 +716,18 @@ impl AppState {
         }
     }
 
+    /// Resolve the effective worktree root for a repo: repo-level override wins
+    /// over general, then falls back to `None` (sibling strategy).
+    fn effective_worktree_root(&self, repo_idx: usize) -> Option<PathBuf> {
+        let raw = self
+            .config
+            .repos
+            .get(repo_idx)
+            .and_then(|r| r.worktree_root.as_deref())
+            .or_else(|| self.config.general.worktree_root.as_deref())?;
+        expand_path(raw).ok()
+    }
+
     fn try_create_worktree_modal(&mut self, m: &NewWorktreeModal) -> Result<()> {
         let repo_idx = m.repo_idx;
         let Some(repo) = self.repos.get(repo_idx) else {
@@ -726,6 +736,8 @@ impl AppState {
         let repo_root = repo.root_path.clone();
         let repo_name = repo.name.clone();
         let base_branch = repo.base_branch.clone();
+        let wt_root = self.effective_worktree_root(repo_idx);
+        let wt_root_ref = wt_root.as_deref();
 
         match m.mode {
             NewWorktreeMode::NewBranch => {
@@ -733,19 +745,29 @@ impl AppState {
                 if branch.is_empty() {
                     anyhow::bail!("branch name cannot be empty");
                 }
-                let path = git::derive_worktree_path(&repo_root, &repo_name, branch);
+                let path = git::derive_worktree_path(&repo_root, &repo_name, branch, wt_root_ref);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating {}", parent.display()))?;
+                }
                 git::create_worktree(&repo_root, branch, &path, &base_branch)?;
             }
             NewWorktreeMode::PickBranch => {
                 let Some(entry) = m.branches.get(m.branch_cursor) else {
                     anyhow::bail!("no branch selected");
                 };
-                let path = git::derive_worktree_path(&repo_root, &repo_name, &entry.name);
+                let path =
+                    git::derive_worktree_path(&repo_root, &repo_name, &entry.name, wt_root_ref);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating {}", parent.display()))?;
+                }
                 if entry.is_remote_only() {
                     let remote = entry.remote.as_deref().unwrap_or("origin");
                     let local_name = generate_unique_local_name(
                         &self.repos[repo_idx],
                         &entry.name,
+                        wt_root_ref,
                     )?;
                     git::create_worktree_from_remote(
                         &repo_root,
@@ -889,6 +911,7 @@ impl AppState {
             name: name.clone(),
             path: path.clone(),
             base_branch: None,
+            worktree_root: None,
         });
         new_config.save(&self.config_path)?;
         self.config = new_config;
@@ -1133,6 +1156,25 @@ impl AppState {
     }
 }
 
+/// Expand `~` and resolve relative paths without requiring the path to exist.
+fn expand_path(raw: &std::path::Path) -> Result<PathBuf> {
+    let s = raw.to_string_lossy();
+    let expanded = if s == "~" {
+        home_dir()?
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        home_dir()?.join(rest)
+    } else {
+        raw.to_path_buf()
+    };
+    if expanded.is_absolute() {
+        Ok(expanded)
+    } else {
+        Ok(std::env::current_dir()
+            .context("getting current directory")?
+            .join(expanded))
+    }
+}
+
 fn resolve_repo_path(raw: &str) -> Result<PathBuf> {
     let expanded = if raw == "~" {
         home_dir()?
@@ -1194,13 +1236,18 @@ fn list_matching_dirs(prefix: &str) -> Vec<String> {
     matches
 }
 
-fn generate_unique_local_name(repo: &crate::model::Repo, branch_name: &str) -> Result<String> {
+fn generate_unique_local_name(
+    repo: &crate::model::Repo,
+    branch_name: &str,
+    worktree_root: Option<&std::path::Path>,
+) -> Result<String> {
     let existing: std::collections::HashSet<&str> =
         repo.worktrees.iter().map(|wt| wt.branch.as_str()).collect();
     for _ in 0..5 {
         let slug = random_slug();
         let candidate = format!("{branch_name}-{slug}");
-        let path = git::derive_worktree_path(&repo.root_path, &repo.name, &candidate);
+        let path =
+            git::derive_worktree_path(&repo.root_path, &repo.name, &candidate, worktree_root);
         if !existing.contains(candidate.as_str()) && !path.exists() {
             return Ok(candidate);
         }
@@ -1575,6 +1622,7 @@ mod tests {
             name: "existing".to_string(),
             path: tmp.clone(),
             base_branch: None,
+            worktree_root: None,
         });
         let dup_path = tmp.join("existing");
         std::fs::create_dir_all(&dup_path).unwrap();
@@ -1667,6 +1715,7 @@ mod tests {
                 name: r.name.clone(),
                 path: r.root_path.clone(),
                 base_branch: None,
+                worktree_root: None,
             })
             .collect();
 

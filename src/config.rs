@@ -9,11 +9,13 @@ pub const TEMPLATE: &str = r#"# grove config
 
 [general]
 default_base_branch = "main"
+# worktree_root = "~/.grove"   # optional; omit to place worktrees next to the repo
 
 # [[repos]]
 # name = "myproject"
 # path = "/path/to/myproject"
-# base_branch = "main"   # optional; overrides general.default_base_branch
+# base_branch = "main"           # optional; overrides general.default_base_branch
+# worktree_root = "~/worktrees"  # optional; overrides general.worktree_root
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -36,12 +38,17 @@ pub struct ThemeConfig {
 pub struct General {
     #[serde(default = "default_base_branch")]
     pub default_base_branch: String,
+    /// When set, new worktrees are placed at `<worktree_root>/<repo>/<branch>`.
+    /// When absent, worktrees are placed next to the repo (sibling strategy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_root: Option<PathBuf>,
 }
 
 impl Default for General {
     fn default() -> Self {
         Self {
             default_base_branch: default_base_branch(),
+            worktree_root: None,
         }
     }
 }
@@ -54,8 +61,11 @@ fn default_base_branch() -> String {
 pub struct RepoConfig {
     pub name: String,
     pub path: PathBuf,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// Per-repo override for worktree placement; inherits `general.worktree_root` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_root: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -128,6 +138,7 @@ mod tests {
         let original = Config {
             general: General {
                 default_base_branch: "main".to_string(),
+                worktree_root: None,
             },
             theme: ThemeConfig::default(),
             repos: vec![
@@ -135,11 +146,13 @@ mod tests {
                     name: "grove".to_string(),
                     path: PathBuf::from("/Users/sebas/dev/grove"),
                     base_branch: None,
+                    worktree_root: None,
                 },
                 RepoConfig {
                     name: "dotfiles".to_string(),
                     path: PathBuf::from("/Users/sebas/dotfiles"),
                     base_branch: Some("master".to_string()),
+                    worktree_root: None,
                 },
             ],
         };

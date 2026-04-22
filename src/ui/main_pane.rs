@@ -10,9 +10,9 @@ use crate::ui::diff;
 
 const DIVIDER: &str = "────────────────────────────────────────";
 
-/// Render the right-hand main pane and return the inner Rect (minus the
-/// bordering block) so callers can size the embedded PTY to match.
-pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
+/// Render the right-hand main pane.  Returns `(terminal_rect, tab_bar_rect)`;
+/// `tab_bar_rect` is `Some` only when a tab bar was actually drawn.
+pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> (Rect, Option<Rect>) {
     let focused = app.ui.focus == FocusZone::Main;
     let border_style = if focused {
         Style::default().fg(app.theme.accent)
@@ -38,14 +38,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
                         .map(|r| r.base_branch.as_str())
                         .unwrap_or("main");
                     diff::render(frame, inner, state, base);
-                    return inner;
+                    return (inner, None);
                 }
                 frame.render_widget(
                     Paragraph::new("  loading diff…")
                         .style(Style::default().add_modifier(Modifier::DIM)),
                     inner,
                 );
-                return inner;
+                return (inner, None);
             }
             MainView::Terminal => {
                 if let Some(ts) = app.terminals.get(&id) {
@@ -56,7 +56,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
                             .split(inner);
                         render_tab_bar(frame, layout[0], ts);
                         render_active_terminal(frame, layout[1], ts);
-                        return layout[1];
+                        return (layout[1], Some(layout[0]));
                     }
                 }
             }
@@ -64,7 +64,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
     }
 
     render_placeholder(frame, inner, app);
-    inner
+    (inner, None)
 }
 
 fn render_tab_bar(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals) {

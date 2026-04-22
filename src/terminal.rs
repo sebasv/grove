@@ -66,7 +66,7 @@ impl Terminal {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(
             size.rows,
             size.cols,
-            0,
+            10_000,
         )));
 
         spawn_reader_thread(reader, parser.clone(), Arc::clone(&writer), wt_id, tx);
@@ -181,7 +181,13 @@ pub fn key_to_pty_bytes(key: crossterm::event::KeyEvent) -> Option<Vec<u8>> {
                 s.as_bytes().to_vec()
             }
         }
-        KeyCode::Enter => b"\r".to_vec(),
+        KeyCode::Enter => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                b"\x1b[13;2u".to_vec()
+            } else {
+                b"\r".to_vec()
+            }
+        }
         KeyCode::Tab => b"\t".to_vec(),
         KeyCode::BackTab => b"\x1b[Z".to_vec(),
         KeyCode::Backspace => b"\x7f".to_vec(),
