@@ -49,15 +49,11 @@ pub fn spawn_terminal_reader(tx: EventSender) {
         while let Some(evt) = stream.next().await {
             let Ok(evt) = evt else { continue };
             match evt {
-                CEvent::Key(key) => {
-                    if tx.send(Event::Input(key)).is_err() {
-                        break;
-                    }
+                CEvent::Key(key) if tx.send(Event::Input(key)).is_err() => {
+                    break;
                 }
-                CEvent::Mouse(mouse) => {
-                    if tx.send(Event::Mouse(mouse)).is_err() {
-                        break;
-                    }
+                CEvent::Mouse(mouse) if tx.send(Event::Mouse(mouse)).is_err() => {
+                    break;
                 }
                 _ => {}
             }

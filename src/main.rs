@@ -269,24 +269,20 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
                 app.ui.focus = crate::app::FocusZone::Main;
             }
         }
-        MouseEventKind::ScrollUp => {
-            if rect_contains(app.layout.main, col, row) {
-                if let Some(id) = app.ui.active_worktree {
-                    if let Some(ts) = app.terminals.get_mut(&id) {
-                        if ts.mode != crate::app::TerminalMode::Scrollback {
-                            ts.mode = crate::app::TerminalMode::Scrollback;
-                        }
-                        ts.scroll(3);
+        MouseEventKind::ScrollUp if rect_contains(app.layout.main, col, row) => {
+            if let Some(id) = app.ui.active_worktree {
+                if let Some(ts) = app.terminals.get_mut(&id) {
+                    if ts.mode != crate::app::TerminalMode::Scrollback {
+                        ts.mode = crate::app::TerminalMode::Scrollback;
                     }
+                    ts.scroll(3);
                 }
             }
         }
-        MouseEventKind::ScrollDown => {
-            if rect_contains(app.layout.main, col, row) {
-                if let Some(id) = app.ui.active_worktree {
-                    if let Some(ts) = app.terminals.get_mut(&id) {
-                        ts.scroll(-3);
-                    }
+        MouseEventKind::ScrollDown if rect_contains(app.layout.main, col, row) => {
+            if let Some(id) = app.ui.active_worktree {
+                if let Some(ts) = app.terminals.get_mut(&id) {
+                    ts.scroll(-3);
                 }
             }
         }
