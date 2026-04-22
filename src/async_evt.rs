@@ -56,10 +56,8 @@ pub fn spawn_terminal_reader(tx: EventSender) {
                 CEvent::Mouse(mouse) if tx.send(Event::Mouse(mouse)).is_err() => {
                     break;
                 }
-                CEvent::Paste(text) => {
-                    if tx.send(Event::Paste(text)).is_err() {
-                        break;
-                    }
+                CEvent::Paste(text) if tx.send(Event::Paste(text.clone())).is_err() => {
+                    break;
                 }
                 _ => {}
             }
