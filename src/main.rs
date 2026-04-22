@@ -20,7 +20,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{AppMessage, AppState, Direction};
+use crate::app::{AppMessage, AppState, Direction, FocusZone};
 use crate::config::Config;
 use crate::paths::AppPaths;
 
@@ -100,7 +100,7 @@ fn run(tui: &mut Tui, app: &mut AppState) -> Result<()> {
         tui.draw(|frame| ui::render(frame, app))?;
 
         if let Event::Key(key) = event::read()? {
-            let msg = key_to_message(key, app.ui.modal.is_some());
+            let msg = key_to_message(key, app.ui.modal.is_some(), app.ui.focus_zone);
             app.update(msg);
             if app.should_quit {
                 break;
@@ -110,7 +110,7 @@ fn run(tui: &mut Tui, app: &mut AppState) -> Result<()> {
     Ok(())
 }
 
-fn key_to_message(key: KeyEvent, modal_open: bool) -> AppMessage {
+fn key_to_message(key: KeyEvent, modal_open: bool, focus_zone: FocusZone) -> AppMessage {
     if key.kind != KeyEventKind::Press {
         return AppMessage::NoOp;
     }
@@ -121,7 +121,7 @@ fn key_to_message(key: KeyEvent, modal_open: bool) -> AppMessage {
         };
     }
     match key.code {
-        KeyCode::Char('q') => AppMessage::Quit,
+        KeyCode::Char('q') if focus_zone == FocusZone::Sidebar => AppMessage::Quit,
         KeyCode::Char('?') => AppMessage::ToggleHelp,
         KeyCode::Char('j') | KeyCode::Down => AppMessage::MoveCursor(Direction::Down),
         KeyCode::Char('k') | KeyCode::Up => AppMessage::MoveCursor(Direction::Up),

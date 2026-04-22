@@ -19,6 +19,7 @@ pub struct UiState {
     pub cursor: Option<SidebarCursor>,
     pub active_worktree: Option<(usize, usize)>,
     pub modal: Option<Modal>,
+    pub focus_zone: FocusZone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,14 @@ pub enum SidebarCursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modal {
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FocusZone {
+    #[default]
+    Sidebar,
+    #[allow(dead_code)]
+    MainPane,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +70,14 @@ impl AppState {
     pub fn load(config: &Config) -> Result<Self> {
         let mut repos = Vec::with_capacity(config.repos.len());
         for repo_cfg in &config.repos {
+            if !repo_cfg.path.is_dir() {
+                eprintln!(
+                    "warning: skipping repo {}: path does not exist or is not a directory: {}",
+                    repo_cfg.name,
+                    repo_cfg.path.display()
+                );
+                continue;
+            }
             let worktrees = match git::list_worktrees(&repo_cfg.path) {
                 Ok(list) => list,
                 Err(err) => {
@@ -146,7 +163,7 @@ impl AppState {
             })
         });
         PersistedState {
-            schema_version: crate::state::current_schema_version(),
+            schema_version: crate::state::CURRENT_SCHEMA_VERSION,
             ui: PersistedUi {
                 active_worktree,
                 expanded: self.ui.expanded.clone(),
@@ -426,7 +443,7 @@ mod tests {
         use crate::state::{ActiveWorktreeId, PersistedState, PersistedUi};
         let mut app = AppState::fixture();
         let persisted = PersistedState {
-            schema_version: crate::state::current_schema_version(),
+            schema_version: crate::state::CURRENT_SCHEMA_VERSION,
             ui: PersistedUi {
                 active_worktree: Some(ActiveWorktreeId {
                     repo: "grove".to_string(),
