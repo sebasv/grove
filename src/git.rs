@@ -285,7 +285,15 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
 
     // Primary checkout.
     if let Some(workdir) = repo.workdir() {
-        if let Some(branch) = branch_name_of_head(&repo) {
+        // Fall back to an abbreviated OID for detached HEAD so the primary
+        // checkout is never silently absent from the sidebar.
+        let branch = branch_name_of_head(&repo).or_else(|| {
+            repo.head().ok()?.target().map(|oid| {
+                let s = oid.to_string();
+                format!("(detached) {}", &s[..s.len().min(7)])
+            })
+        });
+        if let Some(branch) = branch {
             out.push(Worktree {
                 branch,
                 path: workdir.to_path_buf(),

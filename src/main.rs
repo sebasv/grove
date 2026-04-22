@@ -19,8 +19,8 @@ use anyhow::Result;
 use clap::Parser;
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -165,6 +165,9 @@ async fn run(
             Event::Mouse(mouse) => {
                 handle_mouse(mouse, app, &tx);
             }
+            Event::Paste(text) => {
+                handle_paste(text, app);
+            }
             Event::RepoDirty(repo_idx) => {
                 refresh_repo_statuses(repo_idx, app, &tx);
                 // Re-trigger diff refresh for the active worktree if it's in
@@ -228,6 +231,26 @@ fn resize_active_terminal(app: &mut AppState, size: PtySize) {
     if let Some(ts) = app.terminals.get_mut(&id) {
         if let Some(term) = ts.active_mut() {
             let _ = term.resize(size);
+        }
+    }
+}
+
+fn handle_paste(text: String, app: &mut AppState) {
+    if app.ui.focus != FocusZone::Main {
+        return;
+    }
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    let view = app.main_views.get(&id).copied().unwrap_or_default();
+    if view != crate::app::MainView::Terminal {
+        return;
+    }
+    if let Some(ts) = app.terminals.get_mut(&id) {
+        if ts.mode == crate::app::TerminalMode::Insert {
+            if let Some(term) = ts.active_mut() {
+                let _ = term.write(text.as_bytes());
+            }
         }
     }
 }
@@ -817,12 +840,22 @@ fn print_paths(paths: &AppPaths) {
 
 fn init_terminal() -> Result<Tui> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     Ok(Terminal::new(CrosstermBackend::new(io::stdout()))?)
 }
 
 fn restore_terminal() -> Result<()> {
-    execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     disable_raw_mode()?;
     Ok(())
 }

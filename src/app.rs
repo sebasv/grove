@@ -252,7 +252,7 @@ pub enum Direction {
     Down,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum AppMessage {
     MoveCursor(Direction),
     ExpandOrDescend,
@@ -807,6 +807,10 @@ impl AppState {
         }
 
         let new_list = git::list_worktrees(&self.repos[repo_idx].root_path)?;
+        // Remap state keyed by worktree index before replacing the list.
+        // libgit2 enumerates linked worktrees from the filesystem (alphabetical
+        // on APFS/macOS), so adding a new worktree can shift existing indices.
+        self.remap_worktree_state(repo_idx, &new_list);
         self.repos[repo_idx].worktrees = new_list;
         let last = self.repos[repo_idx].worktrees.len().saturating_sub(1);
         self.ui.cursor = Some(SidebarCursor::Worktree {
@@ -814,6 +818,72 @@ impl AppState {
             worktree: last,
         });
         Ok(())
+    }
+
+    /// Remap `terminals`, `diffs`, `main_views`, and `active_worktree` so they
+    /// continue to track the same worktrees after a re-list may have reordered
+    /// them.  Matching is done by filesystem path, which is stable across
+    /// re-lists.
+    fn remap_worktree_state(&mut self, repo_idx: usize, new_list: &[crate::model::Worktree]) {
+        let r = repo_idx;
+        let path_to_new: HashMap<std::path::PathBuf, usize> = new_list
+            .iter()
+            .enumerate()
+            .map(|(j, wt)| (wt.path.clone(), j))
+            .collect();
+        let old_to_new: HashMap<usize, usize> = self.repos[r]
+            .worktrees
+            .iter()
+            .enumerate()
+            .filter_map(|(i, wt)| path_to_new.get(&wt.path).map(|&j| (i, j)))
+            .collect();
+
+        let new_terminals: HashMap<WorktreeId, WorktreeTerminals> = self
+            .terminals
+            .drain()
+            .filter_map(|((rr, ww), v)| {
+                if rr == r {
+                    old_to_new.get(&ww).map(|&nw| ((rr, nw), v))
+                } else {
+                    Some(((rr, ww), v))
+                }
+            })
+            .collect();
+        self.terminals = new_terminals;
+
+        let new_diffs: HashMap<WorktreeId, DiffState> = self
+            .diffs
+            .drain()
+            .filter_map(|((rr, ww), v)| {
+                if rr == r {
+                    old_to_new.get(&ww).map(|&nw| ((rr, nw), v))
+                } else {
+                    Some(((rr, ww), v))
+                }
+            })
+            .collect();
+        self.diffs = new_diffs;
+
+        let new_views: HashMap<WorktreeId, MainView> = self
+            .main_views
+            .drain()
+            .filter_map(|((rr, ww), v)| {
+                if rr == r {
+                    old_to_new.get(&ww).map(|&nw| ((rr, nw), v))
+                } else {
+                    Some(((rr, ww), v))
+                }
+            })
+            .collect();
+        self.main_views = new_views;
+
+        self.ui.active_worktree = self.ui.active_worktree.and_then(|(rr, ww)| {
+            if rr == r {
+                old_to_new.get(&ww).map(|&nw| (rr, nw))
+            } else {
+                Some((rr, ww))
+            }
+        });
     }
 
     fn try_remove_worktree(&mut self, id: WorktreeId) -> Result<()> {
@@ -1853,5 +1923,52 @@ mod tests {
             .status()
             .expect("git");
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn remap_worktree_state_preserves_views_across_reorder() {
+        let mut app = AppState::fixture();
+        let r = 0;
+
+        // Assign distinct views to each worktree in repo 0.
+        app.main_views.insert((r, 0), MainView::Terminal);
+        app.main_views.insert((r, 1), MainView::Diff);
+        app.main_views.insert((r, 2), MainView::Terminal);
+        app.ui.active_worktree = Some((r, 1)); // feat/sidebar
+
+        // Simulate a re-list that swaps indices 1 and 2 (e.g. a new worktree
+        // was inserted before feat/sidebar alphabetically, pushing it back).
+        let new_list = vec![
+            app.repos[r].worktrees[0].clone(), // main stays at 0
+            app.repos[r].worktrees[2].clone(), // fix/deps moves to 1
+            app.repos[r].worktrees[1].clone(), // feat/sidebar moves to 2
+        ];
+
+        app.remap_worktree_state(r, &new_list);
+
+        // main (path unchanged) stays at index 0.
+        assert_eq!(app.main_views.get(&(r, 0)), Some(&MainView::Terminal));
+        // feat/sidebar (was 1) is now at 2.
+        assert_eq!(app.main_views.get(&(r, 2)), Some(&MainView::Diff));
+        // fix/deps (was 2) is now at 1.
+        assert_eq!(app.main_views.get(&(r, 1)), Some(&MainView::Terminal));
+        // active_worktree followed feat/sidebar from 1 → 2.
+        assert_eq!(app.ui.active_worktree, Some((r, 2)));
+    }
+
+    #[test]
+    fn remap_worktree_state_does_not_affect_other_repos() {
+        let mut app = AppState::fixture();
+
+        app.main_views.insert((0, 0), MainView::Diff);
+        app.main_views.insert((1, 0), MainView::Diff);
+        app.ui.active_worktree = Some((1, 0));
+
+        // Remap repo 0 only; repo 1 entries must be untouched.
+        let new_list = vec![app.repos[0].worktrees[0].clone()];
+        app.remap_worktree_state(0, &new_list);
+
+        assert_eq!(app.main_views.get(&(1, 0)), Some(&MainView::Diff));
+        assert_eq!(app.ui.active_worktree, Some((1, 0)));
     }
 }
