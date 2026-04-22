@@ -42,6 +42,9 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    ?                 toggle this help"),
         Line::from("    q                 quit (sidebar focus only)"),
         Line::from(""),
+        Line::styled("  PR badges", bold),
+        Line::from("    set GITHUB_TOKEN, GH_TOKEN, or run 'gh auth login'"),
+        Line::from(""),
         Line::from("  (Esc or ? to close)"),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), modal);

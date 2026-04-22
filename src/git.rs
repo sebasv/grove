@@ -225,6 +225,7 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
                 path: workdir.to_path_buf(),
                 is_primary: true,
                 status: None,
+                pr: None,
             });
         }
     }
@@ -247,6 +248,7 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
             path: wt_path,
             is_primary: false,
             status: None,
+            pr: None,
         });
     }
 

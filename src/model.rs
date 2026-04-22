@@ -14,6 +14,31 @@ pub struct Worktree {
     pub path: PathBuf,
     pub is_primary: bool,
     pub status: Option<WorktreeStatus>,
+    pub pr: Option<PrStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrStatus {
+    pub number: u32,
+    pub state: PrState,
+    pub checks: ChecksRollup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChecksRollup {
+    #[default]
+    None,
+    Pending,
+    Passing,
+    Failing,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
