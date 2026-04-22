@@ -18,7 +18,7 @@ default_base_branch = "main"
 # worktree_root = "~/worktrees"  # optional; overrides general.worktree_root
 "#;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub general: General,

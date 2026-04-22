@@ -1,12 +1,11 @@
 ---
 source: src/ui/confirm.rs
-assertion_line: 50
 expression: render_to_string(&app)
 ---
 " PROJECTS                       ┌ grove ─────────────────────────────┐"
 " ────────────────────────────   │                                    │"
 "▸▼ grove                        │  Select a worktree from the sidebar│"
-"   ○ main                       │  (↑↓ or j/k to move, Enter to activ│"
+"   ○ main                       │  (↑↓ or j/k to navigate)           │"
 "   ● feat/sidebar               │                                    │"
 "   ● fix/deps                   │  Ctrl+Space cycles focus between si│"
 "      ┌ Remove repository? ────────────────────────────────────┐     │"

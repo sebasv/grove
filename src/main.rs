@@ -172,7 +172,7 @@ async fn run(
                 refresh_repo_statuses(repo_idx, app, &tx);
                 // Re-trigger diff refresh for the active worktree if it's in
                 // this repo and currently viewing the Diff pane.
-                if let Some(id) = app.ui.active_worktree {
+                if let Some(id) = app.active_worktree_id() {
                     if id.0 == repo_idx
                         && app.main_views.get(&id).copied().unwrap_or_default()
                             == crate::app::MainView::Diff
@@ -225,7 +225,7 @@ fn resize_active_terminal(app: &mut AppState, size: PtySize) {
     if size.rows == 0 || size.cols == 0 {
         return;
     }
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return;
     };
     if let Some(ts) = app.terminals.get_mut(&id) {
@@ -239,7 +239,7 @@ fn handle_paste(text: String, app: &mut AppState) {
     if app.ui.focus != FocusZone::Main {
         return;
     }
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return;
     };
     let view = app.main_views.get(&id).copied().unwrap_or_default();
@@ -293,7 +293,7 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
             }
         }
         MouseEventKind::ScrollUp if rect_contains(app.layout.main, col, row) => {
-            if let Some(id) = app.ui.active_worktree {
+            if let Some(id) = app.active_worktree_id() {
                 if let Some(ts) = app.terminals.get_mut(&id) {
                     if ts.mode != crate::app::TerminalMode::Scrollback {
                         ts.mode = crate::app::TerminalMode::Scrollback;
@@ -303,7 +303,7 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
             }
         }
         MouseEventKind::ScrollDown if rect_contains(app.layout.main, col, row) => {
-            if let Some(id) = app.ui.active_worktree {
+            if let Some(id) = app.active_worktree_id() {
                 if let Some(ts) = app.terminals.get_mut(&id) {
                     ts.scroll(-3);
                 }
@@ -318,7 +318,7 @@ fn rect_contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 }
 
 fn route_tab_click(app: &mut AppState, col: u16, bar: ratatui::layout::Rect) {
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return;
     };
     let Some(ts) = app.terminals.get_mut(&id) else {
@@ -368,7 +368,7 @@ fn route_sidebar_click(app: &mut AppState, row: u16) {
             return;
         }
         line += 1;
-        let expanded = app.ui.is_expanded(&repo.name);
+        let expanded = app.ui.is_expanded(&repo.root_path);
         if expanded {
             for (j, _wt) in repo.worktrees.iter().enumerate() {
                 if line == row {
@@ -408,7 +408,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
                 ensure_terminal_for_active(app, tx);
             }
             if is_new_terminal {
-                if let Some(id) = app.ui.active_worktree {
+                if let Some(id) = app.active_worktree_id() {
                     spawn_terminal_for(id, app, tx);
                 }
             }
@@ -417,7 +417,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
             }
         }
         InputAction::PtyBytes(bytes) => {
-            if let Some(id) = app.ui.active_worktree {
+            if let Some(id) = app.active_worktree_id() {
                 if let Some(ts) = app.terminals.get_mut(&id) {
                     if let Some(term) = ts.active_mut() {
                         let _ = term.write(&bytes);
@@ -430,7 +430,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
 }
 
 fn ensure_terminal_for_active(app: &mut AppState, tx: &EventSender) {
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return;
     };
     if app.terminals.contains_key(&id) {
@@ -535,7 +535,7 @@ fn main_focus_action(key: KeyEvent, app: &AppState) -> InputAction {
         return InputAction::Message(msg);
     }
 
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return InputAction::Noop;
     };
 
@@ -684,7 +684,7 @@ fn refresh_all_statuses(app: &AppState, tx: &EventSender) {
 }
 
 fn refresh_diff_for_active(app: &AppState, tx: &EventSender) {
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return;
     };
     let Some(repo) = app.repos.get(id.0) else {
@@ -703,7 +703,7 @@ fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
     if app.active_diff_mode() != crate::app::DiffMode::Local {
         return;
     }
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return;
     };
     let Some((worktree_path, file_path, is_staged, base)) = app.diffs.get(&id).and_then(|d| {

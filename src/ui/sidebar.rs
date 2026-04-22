@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 
     for (i, repo) in app.repos.iter().enumerate() {
-        let expanded = app.ui.is_expanded(&repo.name);
+        let expanded = app.ui.is_expanded(&repo.root_path);
         let glyph = if expanded { "▼" } else { "▶" };
         let is_here = cursor == Some(SidebarCursor::Repo(i));
         let marker = if is_here { "▸" } else { " " };
