@@ -30,14 +30,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> (Rect, Option<Re
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if let Some(id) = app.ui.active_worktree {
-        let view = app.main_views.get(&id).copied().unwrap_or_default();
+    if let Some(wt_id) = app.active_worktree_id() {
+        let view = app.main_views.get(&wt_id).copied().unwrap_or_default();
         match view {
             MainView::Diff => {
-                if let Some(state) = app.diffs.get(&id) {
+                if let Some(state) = app.diffs.get(&wt_id) {
                     let base = app
                         .repos
-                        .get(id.0)
+                        .get(wt_id.0)
                         .map(|r| r.base_branch.as_str())
                         .unwrap_or("main");
                     diff::render(frame, inner, state, base);
@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> (Rect, Option<Re
                 return (inner, None);
             }
             MainView::Terminal => {
-                if let Some(ts) = app.terminals.get(&id) {
+                if let Some(ts) = app.terminals.get(&wt_id) {
                     if !ts.list.is_empty() {
                         let layout = Layout::default()
                             .direction(Direction::Vertical)
@@ -112,23 +112,14 @@ fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals)
 }
 
 fn main_pane_title(app: &AppState) -> String {
-    match app.ui.active_worktree {
-        Some((r, w)) => {
-            let name = app.repos.get(r).map(|r| r.name.as_str()).unwrap_or("?");
-            let branch = app
-                .repos
-                .get(r)
-                .and_then(|repo| repo.worktrees.get(w))
-                .map(|wt| wt.branch.as_str())
-                .unwrap_or("?");
-            format!(" {name} · {branch} ")
-        }
+    match &app.ui.active_worktree {
+        Some(id) => format!(" {} · {} ", id.repo, id.branch),
         None => " grove ".to_string(),
     }
 }
 
 fn render_placeholder(frame: &mut Frame, area: Rect, app: &AppState) {
-    let lines = match app.ui.active_worktree {
+    let lines = match app.active_worktree_id() {
         None => empty_lines(),
         Some((r, w)) => active_lines_without_terminal(app, r, w),
     };
@@ -139,7 +130,7 @@ fn empty_lines() -> Vec<Line<'static>> {
     vec![
         Line::from(""),
         Line::from("  Select a worktree from the sidebar."),
-        Line::from("  (↑↓ or j/k to move, Enter to activate)"),
+        Line::from("  (↑↓ or j/k to navigate)"),
         Line::from(""),
         Line::from("  Ctrl+Space cycles focus between sidebar and main."),
     ]
@@ -204,5 +195,17 @@ mod tests {
         });
         app.update(AppMessage::Activate);
         insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn stale_active_worktree_shows_prompt_not_panic() {
+        use crate::state::ActiveWorktreeId;
+        let mut app = AppState::fixture();
+        app.ui.active_worktree = Some(ActiveWorktreeId {
+            repo: "gone-repo".to_string(),
+            branch: "gone-branch".to_string(),
+        });
+        let output = render_to_string(&app);
+        assert!(output.contains("Select a worktree"));
     }
 }

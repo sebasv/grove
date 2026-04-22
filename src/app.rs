@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -137,7 +137,7 @@ impl WorktreeTerminals {
 pub struct UiState {
     pub expanded: HashMap<String, bool>,
     pub cursor: Option<SidebarCursor>,
-    pub active_worktree: Option<(usize, usize)>,
+    pub active_worktree: Option<ActiveWorktreeId>,
     pub modal: Option<Modal>,
     pub focus: FocusZone,
     pub help_scroll: u16,
@@ -308,9 +308,12 @@ pub enum AppMessage {
 }
 
 impl UiState {
-    pub fn is_expanded(&self, repo_name: &str) -> bool {
+    pub fn is_expanded(&self, repo_path: &Path) -> bool {
         // Repos are expanded by default; state only tracks explicit collapses.
-        self.expanded.get(repo_name).copied().unwrap_or(true)
+        self.expanded
+            .get(repo_path.to_string_lossy().as_ref())
+            .copied()
+            .unwrap_or(true)
     }
 }
 
@@ -441,7 +444,7 @@ impl AppState {
     }
 
     fn toggle_diff_view(&mut self) {
-        if let Some(id) = self.ui.active_worktree {
+        if let Some(id) = self.active_worktree_id() {
             let next = match self.main_views.get(&id).copied().unwrap_or_default() {
                 MainView::Terminal => MainView::Diff,
                 MainView::Diff => MainView::Terminal,
@@ -451,7 +454,7 @@ impl AppState {
     }
 
     fn toggle_diff_mode(&mut self) {
-        if let Some(id) = self.ui.active_worktree {
+        if let Some(id) = self.active_worktree_id() {
             let d = self.diffs.entry(id).or_default();
             d.mode = match d.mode {
                 DiffMode::Local => DiffMode::Branch,
@@ -464,14 +467,14 @@ impl AppState {
     }
 
     pub fn active_diff_mode(&self) -> DiffMode {
-        let Some(id) = self.ui.active_worktree else {
+        let Some(id) = self.active_worktree_id() else {
             return DiffMode::Local;
         };
         self.diffs.get(&id).map(|d| d.mode).unwrap_or_default()
     }
 
     fn move_diff_cursor(&mut self, delta: i32) {
-        if let Some(id) = self.ui.active_worktree {
+        if let Some(id) = self.active_worktree_id() {
             if let Some(d) = self.diffs.get_mut(&id) {
                 if d.files.is_empty() {
                     return;
@@ -485,7 +488,7 @@ impl AppState {
     }
 
     fn toggle_diff_focus(&mut self) {
-        if let Some(id) = self.ui.active_worktree {
+        if let Some(id) = self.active_worktree_id() {
             if let Some(d) = self.diffs.get_mut(&id) {
                 d.diff_focus = match d.diff_focus {
                     DiffFocus::List => DiffFocus::Content,
@@ -496,7 +499,7 @@ impl AppState {
     }
 
     fn scroll_diff(&mut self, delta: i32) {
-        if let Some(id) = self.ui.active_worktree {
+        if let Some(id) = self.active_worktree_id() {
             if let Some(d) = self.diffs.get_mut(&id) {
                 let new = d.scroll as i32 + delta;
                 d.scroll = new.max(0) as u16;
@@ -512,7 +515,7 @@ impl AppState {
     }
 
     fn with_active_terminals<F: FnOnce(&mut WorktreeTerminals)>(&mut self, f: F) {
-        if let Some(id) = self.ui.active_worktree {
+        if let Some(id) = self.active_worktree_id() {
             if let Some(ts) = self.terminals.get_mut(&id) {
                 f(ts);
             }
@@ -520,7 +523,7 @@ impl AppState {
     }
 
     fn close_active_terminal(&mut self) {
-        if let Some(id) = self.ui.active_worktree {
+        if let Some(id) = self.active_worktree_id() {
             let drop_entry = self
                 .terminals
                 .get_mut(&id)
@@ -531,6 +534,19 @@ impl AppState {
                 self.ui.focus = FocusZone::Sidebar;
             }
         }
+    }
+
+    pub fn active_worktree_id(&self) -> Option<WorktreeId> {
+        let id = self.ui.active_worktree.as_ref()?;
+        self.repos.iter().enumerate().find_map(|(i, repo)| {
+            if repo.name != id.repo {
+                return None;
+            }
+            repo.worktrees
+                .iter()
+                .position(|wt| wt.branch == id.branch)
+                .map(|j| (i, j))
+        })
     }
 
     fn cycle_focus(&mut self) {
@@ -868,15 +884,15 @@ impl AppState {
             .collect();
         self.main_views = views;
 
-        self.ui.active_worktree = self.ui.active_worktree.and_then(|(rr, ww)| {
-            if rr == r && ww == w {
-                None
-            } else if rr == r && ww > w {
-                Some((rr, ww - 1))
-            } else {
-                Some((rr, ww))
+        // If the removed worktree was active, clear; if a later one shifted, update by branch identity
+        // (ActiveWorktreeId is branch-based so no index fixup needed — it stays valid or becomes stale).
+        if let Some(ref id) = self.ui.active_worktree.clone() {
+            if let Some(repo) = self.repos.get(r) {
+                if repo.name == id.repo && !repo.worktrees.iter().any(|wt| wt.branch == id.branch) {
+                    self.ui.active_worktree = None;
+                }
             }
-        });
+        }
 
         // Move cursor sensibly.
         if self.repos[r].worktrees.is_empty() {
@@ -947,8 +963,10 @@ impl AppState {
         new_config.save(&self.config_path)?;
         self.config = new_config;
 
+        let path_key = self.repos[idx].root_path.to_string_lossy().into_owned();
         self.repos.remove(idx);
-        self.ui.expanded.remove(&name);
+        self.ui.expanded.remove(&path_key);
+        self.ui.active_worktree = self.ui.active_worktree.take().filter(|id| id.repo != name);
 
         // Drop terminals for the removed repo and shift indices for later repos.
         let surviving: HashMap<WorktreeId, WorktreeTerminals> = self
@@ -965,16 +983,6 @@ impl AppState {
             })
             .collect();
         self.terminals = surviving;
-
-        self.ui.active_worktree = self.ui.active_worktree.and_then(|(r, w)| {
-            if r == idx {
-                None
-            } else if r > idx {
-                Some((r - 1, w))
-            } else {
-                Some((r, w))
-            }
-        });
         if self.repos.is_empty() {
             self.ui.cursor = None;
         } else {
@@ -997,8 +1005,11 @@ impl AppState {
 
     pub fn apply_persisted(&mut self, persisted: PersistedState) {
         self.ui.expanded = persisted.ui.expanded;
-        self.ui.active_worktree = persisted.ui.active_worktree.and_then(|active| {
-            self.repos.iter().enumerate().find_map(|(i, repo)| {
+        if let Some(active) = persisted.ui.active_worktree {
+            // Validate the branch still exists, and resolve its current indices for
+            // cursor placement. Indices may differ from the previous session if
+            // worktrees were added or removed.
+            let found = self.repos.iter().enumerate().find_map(|(i, repo)| {
                 if repo.name != active.repo {
                     return None;
                 }
@@ -1006,29 +1017,19 @@ impl AppState {
                     .iter()
                     .position(|wt| wt.branch == active.branch)
                     .map(|j| (i, j))
-            })
-        });
-        if let Some((r, w)) = self.ui.active_worktree {
-            self.ui.cursor = Some(SidebarCursor::Worktree {
-                repo: r,
-                worktree: w,
             });
+            if let Some((r, w)) = found {
+                self.ui.active_worktree = Some(active);
+                self.ui.cursor = Some(SidebarCursor::Worktree { repo: r, worktree: w });
+            }
         }
     }
 
     pub fn to_persisted(&self) -> PersistedState {
-        let active_worktree = self.ui.active_worktree.and_then(|(r, w)| {
-            let repo = self.repos.get(r)?;
-            let wt = repo.worktrees.get(w)?;
-            Some(ActiveWorktreeId {
-                repo: repo.name.clone(),
-                branch: wt.branch.clone(),
-            })
-        });
         PersistedState {
             schema_version: crate::state::current_schema_version(),
             ui: PersistedUi {
-                active_worktree,
+                active_worktree: self.ui.active_worktree.clone(),
                 expanded: self.ui.expanded.clone(),
             },
         }
@@ -1038,7 +1039,7 @@ impl AppState {
         let mut items = Vec::new();
         for (i, repo) in self.repos.iter().enumerate() {
             items.push(SidebarCursor::Repo(i));
-            if self.ui.is_expanded(&repo.name) {
+            if self.ui.is_expanded(&repo.root_path) {
                 for j in 0..repo.worktrees.len() {
                     items.push(SidebarCursor::Worktree {
                         repo: i,
@@ -1059,6 +1060,7 @@ impl AppState {
             Some(c) => c,
             None => {
                 self.ui.cursor = Some(visible[0]);
+                self.sync_active_to_cursor();
                 return;
             }
         };
@@ -1068,22 +1070,24 @@ impl AppState {
             Direction::Down => (pos + 1).min(visible.len() - 1),
         };
         self.ui.cursor = Some(visible[new_pos]);
+        self.sync_active_to_cursor();
     }
 
     fn expand_or_descend(&mut self) {
         let Some(SidebarCursor::Repo(idx)) = self.ui.cursor else {
             return;
         };
-        let name = self.repos[idx].name.clone();
-        if self.ui.is_expanded(&name) {
+        let path = self.repos[idx].root_path.clone();
+        if self.ui.is_expanded(&path) {
             if !self.repos[idx].worktrees.is_empty() {
                 self.ui.cursor = Some(SidebarCursor::Worktree {
                     repo: idx,
                     worktree: 0,
                 });
+                self.sync_active_to_cursor();
             }
         } else {
-            self.ui.expanded.insert(name, true);
+            self.ui.expanded.insert(path.to_string_lossy().into_owned(), true);
         }
     }
 
@@ -1096,9 +1100,9 @@ impl AppState {
                 self.ui.cursor = Some(SidebarCursor::Repo(repo));
             }
             SidebarCursor::Repo(idx) => {
-                let name = self.repos[idx].name.clone();
-                if self.ui.is_expanded(&name) {
-                    self.ui.expanded.insert(name, false);
+                let path = self.repos[idx].root_path.clone();
+                if self.ui.is_expanded(&path) {
+                    self.ui.expanded.insert(path.to_string_lossy().into_owned(), false);
                 }
             }
         }
@@ -1110,13 +1114,29 @@ impl AppState {
         };
         match cursor {
             SidebarCursor::Worktree { repo, worktree } => {
-                self.ui.active_worktree = Some((repo, worktree));
+                self.ui.active_worktree = self.repos.get(repo).and_then(|r| {
+                    r.worktrees.get(worktree).map(|wt| ActiveWorktreeId {
+                        repo: r.name.clone(),
+                        branch: wt.branch.clone(),
+                    })
+                });
             }
             SidebarCursor::Repo(idx) => {
-                let name = self.repos[idx].name.clone();
-                let expanded = self.ui.is_expanded(&name);
-                self.ui.expanded.insert(name, !expanded);
+                let path = self.repos[idx].root_path.clone();
+                let expanded = self.ui.is_expanded(&path);
+                self.ui.expanded.insert(path.to_string_lossy().into_owned(), !expanded);
             }
+        }
+    }
+
+    fn sync_active_to_cursor(&mut self) {
+        if let Some(SidebarCursor::Worktree { repo, worktree }) = self.ui.cursor {
+            self.ui.active_worktree = self.repos.get(repo).and_then(|r| {
+                r.worktrees.get(worktree).map(|wt| ActiveWorktreeId {
+                    repo: r.name.clone(),
+                    branch: wt.branch.clone(),
+                })
+            });
         }
     }
 
@@ -1400,6 +1420,7 @@ mod tests {
                 worktree: 0
             })
         );
+        assert_eq!(app.ui.active_worktree, Some(ActiveWorktreeId { repo: "grove".into(), branch: "main".into() }));
         app.update(AppMessage::MoveCursor(Direction::Down));
         assert_eq!(
             app.ui.cursor,
@@ -1408,12 +1429,21 @@ mod tests {
                 worktree: 1
             })
         );
+        assert_eq!(app.ui.active_worktree, Some(ActiveWorktreeId { repo: "grove".into(), branch: "feat/sidebar".into() }));
+    }
+
+    #[test]
+    fn moving_cursor_to_worktree_activates_it() {
+        let mut app = AppState::fixture();
+        assert_eq!(app.ui.active_worktree, None);
+        app.update(AppMessage::MoveCursor(Direction::Down));
+        assert!(app.ui.active_worktree.is_some());
     }
 
     #[test]
     fn j_skips_collapsed_repo_children() {
         let mut app = AppState::fixture();
-        app.ui.expanded.insert("grove".to_string(), false);
+        app.ui.expanded.insert("/Users/sebas/dev/grove".to_string(), false);
         app.update(AppMessage::MoveCursor(Direction::Down));
         assert_eq!(app.ui.cursor, Some(SidebarCursor::Repo(1)));
     }
@@ -1433,15 +1463,15 @@ mod tests {
     fn h_on_expanded_repo_collapses() {
         let mut app = AppState::fixture();
         app.update(AppMessage::CollapseOrAscend);
-        assert!(!app.ui.is_expanded("grove"));
+        assert!(!app.ui.is_expanded(Path::new("/Users/sebas/dev/grove")));
     }
 
     #[test]
     fn l_on_collapsed_repo_expands() {
         let mut app = AppState::fixture();
-        app.ui.expanded.insert("grove".to_string(), false);
+        app.ui.expanded.insert("/Users/sebas/dev/grove".to_string(), false);
         app.update(AppMessage::ExpandOrDescend);
-        assert!(app.ui.is_expanded("grove"));
+        assert!(app.ui.is_expanded(Path::new("/Users/sebas/dev/grove")));
     }
 
     #[test]
@@ -1465,22 +1495,25 @@ mod tests {
             worktree: 2,
         });
         app.update(AppMessage::Activate);
-        assert_eq!(app.ui.active_worktree, Some((0, 2)));
+        assert_eq!(
+            app.ui.active_worktree,
+            Some(ActiveWorktreeId { repo: "grove".into(), branch: "fix/deps".into() })
+        );
     }
 
     #[test]
     fn enter_on_repo_toggles_expansion() {
         let mut app = AppState::fixture();
         app.update(AppMessage::Activate);
-        assert!(!app.ui.is_expanded("grove"));
+        assert!(!app.ui.is_expanded(Path::new("/Users/sebas/dev/grove")));
         app.update(AppMessage::Activate);
-        assert!(app.ui.is_expanded("grove"));
+        assert!(app.ui.is_expanded(Path::new("/Users/sebas/dev/grove")));
     }
 
     #[test]
     fn persisted_round_trip_restores_expanded_and_active() {
         let mut app = AppState::fixture();
-        app.ui.expanded.insert("dotfiles".to_string(), false);
+        app.ui.expanded.insert("/Users/sebas/dotfiles".to_string(), false);
         app.ui.cursor = Some(SidebarCursor::Worktree {
             repo: 0,
             worktree: 2,
@@ -1491,8 +1524,11 @@ mod tests {
 
         let mut restored = AppState::fixture();
         restored.apply_persisted(persisted);
-        assert!(!restored.ui.is_expanded("dotfiles"));
-        assert_eq!(restored.ui.active_worktree, Some((0, 2)));
+        assert!(!restored.ui.is_expanded(Path::new("/Users/sebas/dotfiles")));
+        assert_eq!(
+            restored.ui.active_worktree,
+            Some(ActiveWorktreeId { repo: "grove".into(), branch: "fix/deps".into() })
+        );
         assert_eq!(
             restored.ui.cursor,
             Some(SidebarCursor::Worktree {
@@ -1730,7 +1766,7 @@ mod tests {
             })
             .collect();
 
-        app.ui.active_worktree = Some((0, 1));
+        app.ui.active_worktree = Some(ActiveWorktreeId { repo: "grove".into(), branch: "feat/sidebar".into() });
         app.remove_repo(0).unwrap();
         assert_eq!(app.ui.active_worktree, None);
     }

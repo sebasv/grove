@@ -318,6 +318,13 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
         });
     }
 
+    // git enumerates .git/worktrees/ in filesystem (inode) order, which is not
+    // stable across worktree creation. Sort linked worktrees alphabetically so
+    // the sidebar order is deterministic regardless of when each was added.
+    if out.len() > 1 {
+        out[1..].sort_by(|a, b| a.branch.cmp(&b.branch));
+    }
+
     Ok(out)
 }
 
