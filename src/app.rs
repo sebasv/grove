@@ -1020,7 +1020,10 @@ impl AppState {
             });
             if let Some((r, w)) = found {
                 self.ui.active_worktree = Some(active);
-                self.ui.cursor = Some(SidebarCursor::Worktree { repo: r, worktree: w });
+                self.ui.cursor = Some(SidebarCursor::Worktree {
+                    repo: r,
+                    worktree: w,
+                });
             }
         }
     }
@@ -1087,7 +1090,9 @@ impl AppState {
                 self.sync_active_to_cursor();
             }
         } else {
-            self.ui.expanded.insert(path.to_string_lossy().into_owned(), true);
+            self.ui
+                .expanded
+                .insert(path.to_string_lossy().into_owned(), true);
         }
     }
 
@@ -1102,7 +1107,9 @@ impl AppState {
             SidebarCursor::Repo(idx) => {
                 let path = self.repos[idx].root_path.clone();
                 if self.ui.is_expanded(&path) {
-                    self.ui.expanded.insert(path.to_string_lossy().into_owned(), false);
+                    self.ui
+                        .expanded
+                        .insert(path.to_string_lossy().into_owned(), false);
                 }
             }
         }
@@ -1124,7 +1131,9 @@ impl AppState {
             SidebarCursor::Repo(idx) => {
                 let path = self.repos[idx].root_path.clone();
                 let expanded = self.ui.is_expanded(&path);
-                self.ui.expanded.insert(path.to_string_lossy().into_owned(), !expanded);
+                self.ui
+                    .expanded
+                    .insert(path.to_string_lossy().into_owned(), !expanded);
             }
         }
     }
@@ -1420,7 +1429,13 @@ mod tests {
                 worktree: 0
             })
         );
-        assert_eq!(app.ui.active_worktree, Some(ActiveWorktreeId { repo: "grove".into(), branch: "main".into() }));
+        assert_eq!(
+            app.ui.active_worktree,
+            Some(ActiveWorktreeId {
+                repo: "grove".into(),
+                branch: "main".into()
+            })
+        );
         app.update(AppMessage::MoveCursor(Direction::Down));
         assert_eq!(
             app.ui.cursor,
@@ -1429,7 +1444,13 @@ mod tests {
                 worktree: 1
             })
         );
-        assert_eq!(app.ui.active_worktree, Some(ActiveWorktreeId { repo: "grove".into(), branch: "feat/sidebar".into() }));
+        assert_eq!(
+            app.ui.active_worktree,
+            Some(ActiveWorktreeId {
+                repo: "grove".into(),
+                branch: "feat/sidebar".into()
+            })
+        );
     }
 
     #[test]
@@ -1443,7 +1464,9 @@ mod tests {
     #[test]
     fn j_skips_collapsed_repo_children() {
         let mut app = AppState::fixture();
-        app.ui.expanded.insert("/Users/sebas/dev/grove".to_string(), false);
+        app.ui
+            .expanded
+            .insert("/Users/sebas/dev/grove".to_string(), false);
         app.update(AppMessage::MoveCursor(Direction::Down));
         assert_eq!(app.ui.cursor, Some(SidebarCursor::Repo(1)));
     }
@@ -1469,7 +1492,9 @@ mod tests {
     #[test]
     fn l_on_collapsed_repo_expands() {
         let mut app = AppState::fixture();
-        app.ui.expanded.insert("/Users/sebas/dev/grove".to_string(), false);
+        app.ui
+            .expanded
+            .insert("/Users/sebas/dev/grove".to_string(), false);
         app.update(AppMessage::ExpandOrDescend);
         assert!(app.ui.is_expanded(Path::new("/Users/sebas/dev/grove")));
     }
@@ -1497,7 +1522,10 @@ mod tests {
         app.update(AppMessage::Activate);
         assert_eq!(
             app.ui.active_worktree,
-            Some(ActiveWorktreeId { repo: "grove".into(), branch: "fix/deps".into() })
+            Some(ActiveWorktreeId {
+                repo: "grove".into(),
+                branch: "fix/deps".into()
+            })
         );
     }
 
@@ -1513,7 +1541,9 @@ mod tests {
     #[test]
     fn persisted_round_trip_restores_expanded_and_active() {
         let mut app = AppState::fixture();
-        app.ui.expanded.insert("/Users/sebas/dotfiles".to_string(), false);
+        app.ui
+            .expanded
+            .insert("/Users/sebas/dotfiles".to_string(), false);
         app.ui.cursor = Some(SidebarCursor::Worktree {
             repo: 0,
             worktree: 2,
@@ -1527,7 +1557,10 @@ mod tests {
         assert!(!restored.ui.is_expanded(Path::new("/Users/sebas/dotfiles")));
         assert_eq!(
             restored.ui.active_worktree,
-            Some(ActiveWorktreeId { repo: "grove".into(), branch: "fix/deps".into() })
+            Some(ActiveWorktreeId {
+                repo: "grove".into(),
+                branch: "fix/deps".into()
+            })
         );
         assert_eq!(
             restored.ui.cursor,
@@ -1766,7 +1799,10 @@ mod tests {
             })
             .collect();
 
-        app.ui.active_worktree = Some(ActiveWorktreeId { repo: "grove".into(), branch: "feat/sidebar".into() });
+        app.ui.active_worktree = Some(ActiveWorktreeId {
+            repo: "grove".into(),
+            branch: "feat/sidebar".into(),
+        });
         app.remove_repo(0).unwrap();
         assert_eq!(app.ui.active_worktree, None);
     }
