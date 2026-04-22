@@ -49,15 +49,11 @@ pub fn spawn_terminal_reader(tx: EventSender) {
         while let Some(evt) = stream.next().await {
             let Ok(evt) = evt else { continue };
             match evt {
-                CEvent::Key(key) => {
-                    if tx.send(Event::Input(key)).is_err() {
-                        break;
-                    }
+                CEvent::Key(key) if tx.send(Event::Input(key)).is_err() => {
+                    break;
                 }
-                CEvent::Mouse(mouse) => {
-                    if tx.send(Event::Mouse(mouse)).is_err() {
-                        break;
-                    }
+                CEvent::Mouse(mouse) if tx.send(Event::Mouse(mouse)).is_err() => {
+                    break;
                 }
                 _ => {}
             }
@@ -107,8 +103,8 @@ pub fn spawn_repo_watcher(
     let handler = move |res: DebounceEventResult| {
         let _ = fs_tx.send(res);
     };
-    let mut debouncer = new_debouncer(Duration::from_millis(150), handler)
-        .context("creating fs debouncer")?;
+    let mut debouncer =
+        new_debouncer(Duration::from_millis(150), handler).context("creating fs debouncer")?;
     debouncer
         .watcher()
         .watch(&dot_git, RecursiveMode::Recursive)

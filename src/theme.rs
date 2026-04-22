@@ -73,7 +73,10 @@ mod tests {
     #[test]
     fn resolve_maps_each_name() {
         assert_eq!(resolve(ThemeName::Default).accent, Color::Cyan);
-        assert!(matches!(resolve(ThemeName::Tokyonight).accent, Color::Rgb(..)));
+        assert!(matches!(
+            resolve(ThemeName::Tokyonight).accent,
+            Color::Rgb(..)
+        ));
         assert!(matches!(resolve(ThemeName::Gruvbox).accent, Color::Rgb(..)));
     }
 }

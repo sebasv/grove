@@ -47,12 +47,7 @@ pub fn render_remove_worktree(frame: &mut Frame, area: Rect, branch: &str) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-pub fn render_delete_branch(
-    frame: &mut Frame,
-    area: Rect,
-    branch: &str,
-    pr_number: Option<u32>,
-) {
+pub fn render_delete_branch(frame: &mut Frame, area: Rect, branch: &str, pr_number: Option<u32>) {
     let height = if pr_number.is_some() { 10u16 } else { 8 };
     let modal_area = centered_rect(64, height, area);
     frame.render_widget(Clear, modal_area);

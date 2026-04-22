@@ -115,8 +115,8 @@ async fn run_cli() -> Result<ExitCode> {
     refresh_all_statuses(&app, &tx);
 
     let gh_client = github::build_client();
-    if gh_client.is_some() {
-        poll_github_prs(&app, &tx, gh_client.as_ref().unwrap());
+    if let Some(client) = &gh_client {
+        poll_github_prs(&app, &tx, client);
     }
 
     let result = run(&mut tui, &mut app, rx, tx, gh_client).await;
@@ -269,24 +269,20 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
                 app.ui.focus = crate::app::FocusZone::Main;
             }
         }
-        MouseEventKind::ScrollUp => {
-            if rect_contains(app.layout.main, col, row) {
-                if let Some(id) = app.ui.active_worktree {
-                    if let Some(ts) = app.terminals.get_mut(&id) {
-                        if ts.mode != crate::app::TerminalMode::Scrollback {
-                            ts.mode = crate::app::TerminalMode::Scrollback;
-                        }
-                        ts.scroll(3);
+        MouseEventKind::ScrollUp if rect_contains(app.layout.main, col, row) => {
+            if let Some(id) = app.ui.active_worktree {
+                if let Some(ts) = app.terminals.get_mut(&id) {
+                    if ts.mode != crate::app::TerminalMode::Scrollback {
+                        ts.mode = crate::app::TerminalMode::Scrollback;
                     }
+                    ts.scroll(3);
                 }
             }
         }
-        MouseEventKind::ScrollDown => {
-            if rect_contains(app.layout.main, col, row) {
-                if let Some(id) = app.ui.active_worktree {
-                    if let Some(ts) = app.terminals.get_mut(&id) {
-                        ts.scroll(-3);
-                    }
+        MouseEventKind::ScrollDown if rect_contains(app.layout.main, col, row) => {
+            if let Some(id) = app.ui.active_worktree {
+                if let Some(ts) = app.terminals.get_mut(&id) {
+                    ts.scroll(-3);
                 }
             }
         }
@@ -295,10 +291,7 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
 }
 
 fn rect_contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
-    col >= rect.x
-        && col < rect.x + rect.width
-        && row >= rect.y
-        && row < rect.y + rect.height
+    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
 fn route_tab_click(app: &mut AppState, col: u16, bar: ratatui::layout::Rect) {
@@ -523,11 +516,7 @@ fn main_focus_action(key: KeyEvent, app: &AppState) -> InputAction {
         return InputAction::Noop;
     };
 
-    let view = app
-        .main_views
-        .get(&id)
-        .copied()
-        .unwrap_or_default();
+    let view = app.main_views.get(&id).copied().unwrap_or_default();
     if view == crate::app::MainView::Diff {
         return InputAction::Message(diff_keys(key));
     }
@@ -537,9 +526,7 @@ fn main_focus_action(key: KeyEvent, app: &AppState) -> InputAction {
     };
 
     match ts.mode {
-        crate::app::TerminalMode::Scrollback => {
-            InputAction::Message(scrollback_keys(key))
-        }
+        crate::app::TerminalMode::Scrollback => InputAction::Message(scrollback_keys(key)),
         crate::app::TerminalMode::Insert => match terminal::key_to_pty_bytes(key) {
             Some(bytes) => InputAction::PtyBytes(bytes),
             None => InputAction::Noop,
@@ -648,11 +635,7 @@ fn spawn_watchers(app: &AppState, tx: &EventSender) -> Vec<async_evt::RepoWatche
     watchers
 }
 
-fn poll_github_prs(
-    app: &AppState,
-    tx: &EventSender,
-    client: &std::sync::Arc<octocrab::Octocrab>,
-) {
+fn poll_github_prs(app: &AppState, tx: &EventSender, client: &std::sync::Arc<octocrab::Octocrab>) {
     for (r, repo) in app.repos.iter().enumerate() {
         let Some(owner_repo) = github::discover_owner_repo(&repo.root_path) else {
             continue;

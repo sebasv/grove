@@ -18,16 +18,9 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn spawn(
-        cwd: &Path,
-        size: PtySize,
-        wt_id: WorktreeId,
-        tx: EventSender,
-    ) -> Result<Self> {
+    pub fn spawn(cwd: &Path, size: PtySize, wt_id: WorktreeId, tx: EventSender) -> Result<Self> {
         let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(size)
-            .context("opening pty")?;
+        let pair = pty_system.openpty(size).context("opening pty")?;
 
         let shell = std::env::var_os("SHELL")
             .map(|s| s.to_string_lossy().into_owned())
@@ -42,10 +35,7 @@ impl Terminal {
             cmd.env("TERM", "xterm-256color");
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .context("spawning shell")?;
+        let child = pair.slave.spawn_command(cmd).context("spawning shell")?;
         let child_killer = child.clone_killer();
         // Drop the slave side so the child can exit cleanly on EOF.
         drop(pair.slave);
@@ -59,15 +49,9 @@ impl Terminal {
         let writer = Arc::new(Mutex::new(
             master.take_writer().context("taking pty writer")?,
         ));
-        let reader = master
-            .try_clone_reader()
-            .context("cloning pty reader")?;
+        let reader = master.try_clone_reader().context("cloning pty reader")?;
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(
-            size.rows,
-            size.cols,
-            10_000,
-        )));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, 10_000)));
 
         spawn_reader_thread(reader, parser.clone(), Arc::clone(&writer), wt_id, tx);
 
@@ -90,13 +74,8 @@ impl Terminal {
         if size == self.last_size {
             return Ok(());
         }
-        self.master
-            .resize(size)
-            .context("resizing pty")?;
-        self.parser
-            .lock()
-            .unwrap()
-            .set_size(size.rows, size.cols);
+        self.master.resize(size).context("resizing pty")?;
+        self.parser.lock().unwrap().set_size(size.rows, size.cols);
         self.last_size = size;
         Ok(())
     }
@@ -279,10 +258,7 @@ mod tests {
 
     #[test]
     fn arrow_keys_use_vt_sequences() {
-        assert_eq!(
-            key_to_pty_bytes(key(KeyCode::Up)),
-            Some(b"\x1b[A".to_vec())
-        );
+        assert_eq!(key_to_pty_bytes(key(KeyCode::Up)), Some(b"\x1b[A".to_vec()));
         assert_eq!(
             key_to_pty_bytes(key(KeyCode::Left)),
             Some(b"\x1b[D".to_vec())

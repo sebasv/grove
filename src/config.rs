@@ -18,7 +18,7 @@ default_base_branch = "main"
 # worktree_root = "~/worktrees"  # optional; overrides general.worktree_root
 "#;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub general: General,
@@ -68,22 +68,11 @@ pub struct RepoConfig {
     pub worktree_root: Option<PathBuf>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: General::default(),
-            theme: ThemeConfig::default(),
-            repos: Vec::new(),
-        }
-    }
-}
-
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
-        toml::from_str(&content)
-            .with_context(|| format!("parsing config at {}", path.display()))
+        toml::from_str(&content).with_context(|| format!("parsing config at {}", path.display()))
     }
 
     pub fn load_or_default(path: &Path) -> Result<Self> {

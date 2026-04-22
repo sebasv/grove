@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-13
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          tar -czf grove-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release grove
+          echo "ASSET=grove-${{ matrix.target }}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "target\${{ matrix.target }}\release\grove.exe" `
+            -DestinationPath "grove-${{ matrix.target }}.zip"
+          "ASSET=grove-${{ matrix.target }}.zip" | Out-File -Append $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grove-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*
+          generate_release_notes: true
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: sebasv/homebrew-grove
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update formula
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          python3 - "$VERSION" <<'EOF'
+          import re, urllib.request, hashlib, sys
+
+          version = sys.argv[1]          # e.g. "v0.2.0"
+          version_no_v = version.lstrip("v")
+          base = f"https://github.com/sebasv/grove/releases/download/{version}"
+
+          targets = [
+              "aarch64-apple-darwin",
+              "x86_64-apple-darwin",
+              "aarch64-unknown-linux-gnu",
+              "x86_64-unknown-linux-gnu",
+          ]
+
+          sha256s = {}
+          for target in targets:
+              url = f"{base}/grove-{target}.tar.gz"
+              print(f"Fetching {url} ...")
+              with urllib.request.urlopen(url) as f:
+                  sha256s[target] = hashlib.sha256(f.read()).hexdigest()
+              print(f"  {sha256s[target]}")
+
+          with open("tap/Formula/grove.rb") as f:
+              formula = f.read()
+
+          formula = re.sub(r'version "[\d.]+"', f'version "{version_no_v}"', formula)
+
+          for target in targets:
+              url = f"{base}/grove-{target}.tar.gz"
+              formula = re.sub(
+                  rf'url "https://github\.com/sebasv/grove/releases/download/[^"]*/grove-{re.escape(target)}\.tar\.gz"(\n\s+sha256 ")[^"]*(")',
+                  rf'url "{url}"\g<1>{sha256s[target]}\g<2>',
+                  formula,
+              )
+
+          with open("tap/Formula/grove.rb", "w") as f:
+              f.write(formula)
+
+          print("Done.")
+          EOF
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/grove.rb
+          git commit -m "chore: bump grove to ${{ github.ref_name }}"
+          git push
