@@ -52,14 +52,24 @@ pub fn compute_branch_diff(
     let head = repo.head().context("resolving HEAD")?;
     let head_oid = head.target().ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
 
-    let base_ref = match repo.find_branch(base_branch, BranchType::Local) {
-        Ok(b) => b,
-        Err(_) => return Ok(Vec::new()),
+    // Prefer origin/<base> so the diff reflects the remote tip rather than a
+    // potentially stale local branch (common in worktree workflows where the
+    // local base branch is never checked out or pulled).
+    let remote_name = format!("origin/{base_branch}");
+    let base_oid = if let Ok(b) = repo.find_branch(&remote_name, BranchType::Remote) {
+        match b.get().target() {
+            Some(oid) => oid,
+            None => return Ok(Vec::new()),
+        }
+    } else {
+        match repo.find_branch(base_branch, BranchType::Local) {
+            Ok(b) => match b.get().target() {
+                Some(oid) => oid,
+                None => return Ok(Vec::new()),
+            },
+            Err(_) => return Ok(Vec::new()),
+        }
     };
-    let base_oid = base_ref
-        .get()
-        .target()
-        .ok_or_else(|| anyhow::anyhow!("base branch has no OID"))?;
 
     let merge_base = match repo.merge_base(head_oid, base_oid) {
         Ok(oid) => oid,
