@@ -1,7 +1,6 @@
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::block::Title;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
@@ -32,7 +31,14 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
         Line::from("    Ctrl+t            new tab"),
         Line::from("    Ctrl+w            close tab"),
         Line::from("    Ctrl+h / Ctrl+l   previous / next tab"),
-        Line::from("    Ctrl+\\            toggle scrollback mode"),
+        Line::from("    Ctrl+\\            enter scrollback mode"),
+        Line::from("    scroll wheel      enter scrollback + scroll"),
+        Line::from(""),
+        Line::styled("  Scrollback mode", bold),
+        Line::from("    j / k / ↑↓        scroll one line"),
+        Line::from("    PageUp / PageDown  scroll 20 lines"),
+        Line::from("    g / G             top / bottom"),
+        Line::from("    i / q / Esc       exit scrollback mode"),
         Line::from(""),
         Line::styled("  Diff (focus=Main)", bold),
         Line::from("    Ctrl+d            toggle diff view"),
@@ -68,7 +74,7 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
     let dim = Style::default().fg(Color::DarkGray);
     let mut block = block;
     if has_more_above {
-        block = block.title(Title::from(Span::styled(" ↑ ", dim)).alignment(Alignment::Right));
+        block = block.title_top(Line::from(Span::styled(" ↑ ", dim)).right_aligned());
     }
     if has_more_below {
         block = block.title_bottom(Line::from(Span::styled(" ↓ more ", dim)));

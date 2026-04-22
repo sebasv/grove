@@ -200,6 +200,7 @@ fn draw(tui: &mut Tui, app: &mut AppState) -> Result<PtySize> {
     let mut layout_out = ui::RenderedLayout {
         sidebar: ratatui::layout::Rect::default(),
         main_inner: ratatui::layout::Rect::default(),
+        tab_bar: None,
     };
     tui.draw(|frame| {
         let layout = ui::render(frame, app);
@@ -213,6 +214,7 @@ fn draw(tui: &mut Tui, app: &mut AppState) -> Result<PtySize> {
     })?;
     app.layout.sidebar = layout_out.sidebar;
     app.layout.main = layout_out.main_inner;
+    app.layout.tab_bar = layout_out.tab_bar;
     Ok(main_size)
 }
 
@@ -231,8 +233,23 @@ fn resize_active_terminal(app: &mut AppState, size: PtySize) {
 }
 
 fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
-    // Modal swallows mouse events in v1.1 — keep keyboard-only UX for inputs.
-    if app.ui.modal.is_some() {
+    // Scroll events are allowed through when the help overlay is open so the
+    // user can wheel through it.  All other mouse events are swallowed while
+    // any modal is visible to keep keyboard-only UX for inputs.
+    let help_open = matches!(app.ui.modal, Some(Modal::Help));
+    if app.ui.modal.is_some() && !help_open {
+        return;
+    }
+    if help_open {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                app.update(AppMessage::HelpScrollUp);
+            }
+            MouseEventKind::ScrollDown => {
+                app.update(AppMessage::HelpScrollDown);
+            }
+            _ => {}
+        }
         return;
     }
     let (col, row) = (mouse.column, mouse.row);
@@ -241,6 +258,13 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
             if rect_contains(app.layout.sidebar, col, row) {
                 app.ui.focus = crate::app::FocusZone::Sidebar;
                 route_sidebar_click(app, row);
+            } else if let Some(bar) = app.layout.tab_bar {
+                if rect_contains(bar, col, row) {
+                    app.ui.focus = crate::app::FocusZone::Main;
+                    route_tab_click(app, col, bar);
+                } else if rect_contains(app.layout.main, col, row) {
+                    app.ui.focus = crate::app::FocusZone::Main;
+                }
             } else if rect_contains(app.layout.main, col, row) {
                 app.ui.focus = crate::app::FocusZone::Main;
             }
@@ -275,6 +299,39 @@ fn rect_contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
         && col < rect.x + rect.width
         && row >= rect.y
         && row < rect.y + rect.height
+}
+
+fn route_tab_click(app: &mut AppState, col: u16, bar: ratatui::layout::Rect) {
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    let Some(ts) = app.terminals.get_mut(&id) else {
+        return;
+    };
+    if col < bar.x {
+        return;
+    }
+    let offset = col - bar.x;
+    let mut x: u16 = 0;
+    for i in 0..ts.list.len() {
+        let is_active = i == ts.active;
+        let mode_hint_len: u16 = if is_active && ts.mode == crate::app::TerminalMode::Scrollback {
+            2
+        } else {
+            0
+        };
+        // label: " {marker}{tab_num}{mode_hint} " = 1 + 1 + digits + mode_hint + 1
+        let digits = (i + 1).to_string().len() as u16;
+        let label_width = 2 + digits + mode_hint_len + 1;
+        let slot_width = label_width + 1; // label + separator space
+        if offset >= x && offset < x + slot_width {
+            ts.active = i;
+            ts.mode = crate::app::TerminalMode::Insert;
+            ts.scroll_offset = 0;
+            return;
+        }
+        x += slot_width;
+    }
 }
 
 fn route_sidebar_click(app: &mut AppState, row: u16) {
