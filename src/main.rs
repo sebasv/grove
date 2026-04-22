@@ -199,6 +199,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
             let is_refresh = matches!(msg, AppMessage::RefreshAll);
             let is_new_terminal = matches!(msg, AppMessage::NewTerminal);
             let is_toggle_diff = matches!(msg, AppMessage::ToggleDiffView);
+            let is_toggle_diff_mode = matches!(msg, AppMessage::ToggleDiffMode);
             let is_stage = matches!(msg, AppMessage::StageFocused);
             let is_unstage = matches!(msg, AppMessage::UnstageFocused);
             if is_refresh {
@@ -216,7 +217,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
                     spawn_terminal_for(id, app, tx);
                 }
             }
-            if is_toggle_diff {
+            if is_toggle_diff || is_toggle_diff_mode {
                 refresh_diff_for_active(app, tx);
             }
         }
@@ -365,6 +366,7 @@ fn diff_keys(key: KeyEvent) -> AppMessage {
         KeyCode::Tab => AppMessage::DiffToggleFocus,
         KeyCode::Char('s') => AppMessage::StageFocused,
         KeyCode::Char('u') => AppMessage::UnstageFocused,
+        KeyCode::Char('m') => AppMessage::ToggleDiffMode,
         KeyCode::Esc => AppMessage::ToggleDiffView,
         _ => AppMessage::NoOp,
     }
@@ -385,6 +387,11 @@ fn main_reserved_keys(key: KeyEvent) -> Option<AppMessage> {
     }
     if ctrl && matches!(key.code, KeyCode::Char('w')) {
         return Some(AppMessage::CloseTerminal);
+    }
+    // Ctrl+d: toggle diff view. Must be intercepted here so it doesn't reach
+    // the PTY as EOF (which kills the shell).
+    if ctrl && matches!(key.code, KeyCode::Char('d')) {
+        return Some(AppMessage::ToggleDiffView);
     }
     if alt {
         return match key.code {
@@ -452,24 +459,35 @@ fn refresh_diff_for_active(app: &AppState, tx: &EventSender) {
     let Some(id) = app.ui.active_worktree else {
         return;
     };
-    let Some(wt) = app
-        .repos
-        .get(id.0)
-        .and_then(|repo| repo.worktrees.get(id.1))
-    else {
+    let Some(repo) = app.repos.get(id.0) else {
         return;
     };
-    async_evt::spawn_diff_refresh(id, wt.path.clone(), tx.clone());
+    let Some(wt) = repo.worktrees.get(id.1) else {
+        return;
+    };
+    let mode = app.active_diff_mode();
+    let base = repo.base_branch.clone();
+    async_evt::spawn_diff_refresh(id, wt.path.clone(), mode, base, tx.clone());
 }
 
 fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
+    // Stage/unstage only makes sense in Local mode.
+    if app.active_diff_mode() != crate::app::DiffMode::Local {
+        return;
+    }
     let Some(id) = app.ui.active_worktree else {
         return;
     };
-    let Some((worktree_path, file_path, is_staged)) = app.diffs.get(&id).and_then(|d| {
+    let Some((worktree_path, file_path, is_staged, base)) = app.diffs.get(&id).and_then(|d| {
         let file = d.files.get(d.cursor)?;
-        let wt = app.repos.get(id.0)?.worktrees.get(id.1)?;
-        Some((wt.path.clone(), file.path.clone(), file.staged))
+        let repo = app.repos.get(id.0)?;
+        let wt = repo.worktrees.get(id.1)?;
+        Some((
+            wt.path.clone(),
+            file.path.clone(),
+            file.staged,
+            repo.base_branch.clone(),
+        ))
     }) else {
         return;
     };
@@ -480,7 +498,13 @@ fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
         _ => return,
     };
     if result.is_ok() {
-        async_evt::spawn_diff_refresh(id, worktree_path, tx.clone());
+        async_evt::spawn_diff_refresh(
+            id,
+            worktree_path,
+            crate::app::DiffMode::Local,
+            base,
+            tx.clone(),
+        );
     }
 }
 

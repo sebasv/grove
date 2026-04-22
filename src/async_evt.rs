@@ -66,9 +66,19 @@ pub fn spawn_status_refresh(id: WorktreeId, path: PathBuf, tx: EventSender) {
     });
 }
 
-pub fn spawn_diff_refresh(id: WorktreeId, path: PathBuf, tx: EventSender) {
+pub fn spawn_diff_refresh(
+    id: WorktreeId,
+    path: PathBuf,
+    mode: crate::app::DiffMode,
+    base_branch: String,
+    tx: EventSender,
+) {
     tokio::task::spawn_blocking(move || {
-        let files = crate::git::compute_local_diff(&path).unwrap_or_default();
+        let files = match mode {
+            crate::app::DiffMode::Local => crate::git::compute_local_diff(&path),
+            crate::app::DiffMode::Branch => crate::git::compute_branch_diff(&path, &base_branch),
+        }
+        .unwrap_or_default();
         let _ = tx.send(Event::DiffReady(id, files));
     });
 }
