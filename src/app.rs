@@ -252,7 +252,7 @@ pub enum Direction {
     Down,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum AppMessage {
     MoveCursor(Direction),
     ExpandOrDescend,
