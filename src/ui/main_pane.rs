@@ -57,7 +57,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> (Rect, Option<Re
                             .direction(Direction::Vertical)
                             .constraints([Constraint::Length(1), Constraint::Min(0)])
                             .split(inner);
-                        render_tab_bar(frame, layout[0], ts);
+                        let scrollback_depth = scrollback_depth(ts);
+                        render_tab_bar(frame, layout[0], ts, scrollback_depth);
                         render_active_terminal(frame, layout[1], ts);
                         return (layout[1], Some(layout[0]));
                     }
@@ -70,15 +71,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> (Rect, Option<Re
     (inner, None)
 }
 
-fn render_tab_bar(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals) {
+/// Returns the number of rows in the active terminal's scrollback buffer.
+fn scrollback_depth(ts: &WorktreeTerminals) -> usize {
+    ts.active_ref()
+        .and_then(|term| term.parser.lock().ok())
+        .map(|p| p.screen().scrollback_rows())
+        .unwrap_or(0)
+}
+
+fn render_tab_bar(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals, scrollback_depth: usize) {
     let mut spans = Vec::with_capacity(ts.list.len() * 2 + 1);
     for i in 0..ts.list.len() {
         let is_active = i == ts.active;
         let marker = if is_active { "▸" } else { " " };
         let mode_hint = if is_active && ts.mode == TerminalMode::Scrollback {
-            " ⇅"
+            let offset = ts.scroll_offset.min(scrollback_depth);
+            format!(" ⇅ {offset}/{scrollback_depth}")
         } else {
-            ""
+            String::new()
         };
         let label = format!(" {marker}{}{mode_hint} ", i + 1);
         let style = if is_active {
@@ -103,11 +113,9 @@ fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals)
     let Ok(mut parser) = term.parser.lock() else {
         return;
     };
-    // vt100's visible_rows computes `rows_len - scrollback_offset`, which
-    // underflows when the offset exceeds the screen height. Clamp here since
-    // vt100 only clamps to scrollback.len(), not to the safe upper bound.
-    let max_offset = parser.screen().size().0 as usize;
-    parser.set_scrollback(ts.scroll_offset.min(max_offset));
+    // vt100 clamps set_scrollback to scrollback.len(); the underflow bug in
+    // visible_rows (rows_len - scrollback_offset) is fixed in vendor/vt100.
+    parser.set_scrollback(ts.scroll_offset);
     frame.render_widget(PseudoTerminal::new(parser.screen()), area);
 }
 
