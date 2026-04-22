@@ -4,6 +4,8 @@ version = "1.1.0"
 edition = "2021"
 description = "A TUI for cultivating git repos, worktrees, and the work inside them"
 repository = "https://github.com/sebasv/grove"
+license = "MIT"
+authors = ["Sebastiaan Vermeulen"]
 
 [dependencies]
 anyhow = "1"

@@ -468,18 +468,20 @@ Items reviewed and deliberately deferred. Revisit at the indicated milestone.
 
 ## Phased Delivery
 
-| Phase | Scope |
-|-------|-------|
-| **v0.1 — skeleton** | Sidebar with config-driven repo list, `j/k/h/l/Enter` navigation, help overlay, persisted UI state |
-| **v0.2 — repo management** | In-app add/remove repo modal (`a` / `R`) that writes `config.toml`; empty-sidebar first-run ("No repos — press `a` to add one"). Replaces the v0.1 `--init` round-trip. |
-| **v0.3 — git status** | Live badges via `git2` + `notify` watcher |
-| **v0.4 — embedded terminal (one)** | Single PTY in main pane via `tui-term`; Insert/Scrollback modes |
-| **v0.5 — terminal tabs** | Multiple PTYs per worktree; tab bar |
-| **v0.6 — diff: local** | Local changes viewer, stage/unstage |
-| **v0.7 — diff: branch** | Branch-vs-main mode, mode switcher |
-| **v0.8 — GitHub PR** | PR + CI badge polling via `octocrab` |
-| **v0.9 — worktree management** | Create/delete worktrees from TUI (`w` / `W`) |
-| **v1.0** | Config polish, themes, stable keybindings, `--help`; fix per-worktree terminal index (`HashMap<WorktreeId, usize>`); fix linked-worktree git watcher; two focus zones (drop tab bar zone); new-worktree branch picker (local + remote, slug for remote-only); kill-worktree branch deletion with unmerged/PR warnings; add-repo path autocomplete |
-| **v1.1** | Mouse support; Kitty keyboard protocol (Shift+Enter + modifier passthrough, graceful degradation); diff search; evaluate `vt100` vs `alacritty_terminal` |
-| **v1.2** | User-configurable keybindings; GitHub provider abstraction (groundwork for GitLab/Gitea) |
-| **v1.5** | Optional tmux backing for session persistence |
+| Status | Phase | Scope |
+|--------|-------|-------|
+| ✅ | **v0.1 — skeleton** | Sidebar with config-driven repo list, `j/k/h/l/Enter` navigation, help overlay, persisted UI state |
+| ✅ | **v0.2 — repo management** | In-app add/remove repo modal (`a` / `R`) that writes `config.toml`; empty-sidebar first-run ("No repos — press `a` to add one"). Replaces the v0.1 `--init` round-trip. |
+| ✅ | **v0.3 — git status** | Live badges via `git2` + `notify` watcher |
+| ✅ | **v0.4 — embedded terminal (one)** | Single PTY in main pane via `tui-term`; Insert/Scrollback modes |
+| ✅ | **v0.5 — terminal tabs** | Multiple PTYs per worktree; tab bar |
+| ✅ | **v0.6 — diff: local** | Local changes viewer, stage/unstage |
+| ✅ | **v0.7 — diff: branch** | Branch-vs-main mode, mode switcher |
+| ✅ | **v0.8 — GitHub PR** | PR + CI badge polling via `octocrab` |
+| ✅ | **v0.9 — worktree management** | Create/delete worktrees from TUI (`w` / `W`) |
+| ✅ | **v1.0** | Config file polish, themes, stable keybindings, `--help` |
+| ✅ | **v1.1** | Mouse support — click to focus panes, scroll wheel in terminal/diff, click tabs |
+| 🔜 | **v1.2** | User-configurable keybindings |
+| 💡 | **v1.5** | Optional tmux backing for session persistence |
+
+✅ shipped · 🔜 planned · 💡 exploratory

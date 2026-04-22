@@ -33,8 +33,8 @@ pub fn load(path: &Path) -> Result<Option<PersistedState>> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading state at {}", path.display()))?;
-    let state: PersistedState = toml::from_str(&content)
-        .with_context(|| format!("parsing state at {}", path.display()))?;
+    let state: PersistedState =
+        toml::from_str(&content).with_context(|| format!("parsing state at {}", path.display()))?;
     if state.schema_version != CURRENT_SCHEMA_VERSION {
         eprintln!(
             "warning: ignoring state file at {} (schema_version={}, expected {})",
