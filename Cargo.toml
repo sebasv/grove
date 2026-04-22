@@ -30,7 +30,8 @@ vt100 = "0.15"
 insta = "1"
 
 [patch.crates-io]
-# Patches vt100's visible_rows to use saturating_sub, preventing an integer
+# Patches vt100 0.15.2's visible_rows to use saturating_sub, fixing an integer
 # underflow panic when the scrollback offset exceeds the screen height.
-# Also adds Screen::scrollback_rows() to expose the actual buffer depth.
-vt100 = { path = "vendor/vt100" }
+# Adds Screen::scrollback_rows() to expose the actual buffer depth.
+# Track https://github.com/sebasv/vt100-grove/pull/1 for upstream status.
+vt100 = { git = "https://github.com/sebasv/vt100-grove", rev = "ee9a8dfd2dd1808dd2350e6dabb680f9256e2d49" }
