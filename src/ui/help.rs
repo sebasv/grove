@@ -1,6 +1,7 @@
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::block::Title;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
@@ -52,12 +53,27 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
         Line::from(""),
         Line::from("  (Esc or ? to close)"),
     ];
+    let total = all_lines.len();
+    let scroll = scroll as usize;
+    let has_more_below = scroll + inner_h < total;
+    let has_more_above = scroll > 0;
+
     // Slice to the visible window so content never bleeds past the border.
     let visible: Vec<Line> = all_lines
         .into_iter()
-        .skip(scroll as usize)
+        .skip(scroll)
         .take(inner_h)
         .collect();
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut block = block;
+    if has_more_above {
+        block = block.title(Title::from(Span::styled(" ↑ ", dim)).alignment(Alignment::Right));
+    }
+    if has_more_below {
+        block = block.title_bottom(Line::from(Span::styled(" ↓ more ", dim)));
+    }
+
     frame.render_widget(Paragraph::new(visible).block(block), modal);
 }
 

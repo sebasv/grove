@@ -37,7 +37,7 @@ expression: terminal.backend()
 "     │    F2                cycle color scheme                  │    │"
 "     │    ?                 toggle this help  (j/k to scroll)   │    │"
 "     │    q                 quit (sidebar focus only)           │    │"
-"     └──────────────────────────────────────────────────────────┘    │"
+"     └ ↓ more ──────────────────────────────────────────────────┘    │"
 "                                │                                    │"
 "                                │                                    │"
 "                                │                                    │"
