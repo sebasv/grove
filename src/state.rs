@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedState {
@@ -61,10 +61,6 @@ pub fn save(state: &PersistedState, path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn current_schema_version() -> u32 {
-    CURRENT_SCHEMA_VERSION
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,7 +87,7 @@ mod tests {
 
     #[test]
     fn save_and_load_returns_same_state() {
-        let dir = tempdir();
+        let dir = TempDir::new();
         let path = dir.join("state.toml");
         let state = PersistedState {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -104,28 +100,42 @@ mod tests {
 
     #[test]
     fn load_missing_file_returns_none() {
-        let dir = tempdir();
+        let dir = TempDir::new();
         let path = dir.join("does-not-exist.toml");
         assert!(load(&path).unwrap().is_none());
     }
 
     #[test]
     fn load_rejects_incompatible_schema() {
-        let dir = tempdir();
+        let dir = TempDir::new();
         let path = dir.join("state.toml");
         std::fs::write(&path, "schema_version = 99\n").unwrap();
         assert!(load(&path).unwrap().is_none());
     }
 
-    fn tempdir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "grove-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "grove-test-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn join(&self, path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+            self.0.join(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
