@@ -25,8 +25,12 @@ fn empty_lines() -> Vec<Line<'static>> {
 }
 
 fn active_lines(app: &AppState, repo_idx: usize, wt_idx: usize) -> Vec<Line<'static>> {
-    let repo = &app.repos[repo_idx];
-    let wt = &repo.worktrees[wt_idx];
+    let Some(repo) = app.repos.get(repo_idx) else {
+        return empty_lines();
+    };
+    let Some(wt) = repo.worktrees.get(wt_idx) else {
+        return empty_lines();
+    };
     let bold = Style::default().add_modifier(Modifier::BOLD);
     vec![
         Line::from(""),
@@ -77,5 +81,13 @@ mod tests {
         });
         app.update(AppMessage::Activate);
         insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn stale_active_worktree_index_shows_prompt_not_panic() {
+        let mut app = AppState::fixture();
+        app.ui.active_worktree = Some((99, 99));
+        let output = render_to_string(&app);
+        assert!(output.contains("Select a worktree"));
     }
 }
