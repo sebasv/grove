@@ -16,6 +16,7 @@ pub type WorktreeId = (usize, usize);
 pub enum Event {
     Input(KeyEvent),
     Mouse(MouseEvent),
+    Paste(String),
     RepoDirty(RepoId),
     StatusReady(WorktreeId, WorktreeStatus),
     DiffReady(WorktreeId, Vec<crate::git::DiffFile>),
@@ -53,6 +54,9 @@ pub fn spawn_terminal_reader(tx: EventSender) {
                     break;
                 }
                 CEvent::Mouse(mouse) if tx.send(Event::Mouse(mouse)).is_err() => {
+                    break;
+                }
+                CEvent::Paste(text) if tx.send(Event::Paste(text.clone())).is_err() => {
                     break;
                 }
                 _ => {}
