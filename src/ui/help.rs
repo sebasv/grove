@@ -9,11 +9,13 @@ use crate::ui::centered_rect;
 pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
     let height = (area.height.saturating_sub(2)).min(32);
     let modal = centered_rect(60, height, area);
+    // inner_h = rows available for text after subtracting top+bottom borders
+    let inner_h = modal.height.saturating_sub(2) as usize;
     frame.render_widget(Clear, modal);
 
     let block = Block::default().borders(Borders::ALL).title(" Help ");
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let lines = vec![
+    let all_lines: Vec<Line> = vec![
         Line::from(""),
         Line::styled("  Sidebar", bold),
         Line::from("    j / k             move up / down"),
@@ -50,10 +52,13 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
         Line::from(""),
         Line::from("  (Esc or ? to close)"),
     ];
-    frame.render_widget(
-        Paragraph::new(lines).block(block).scroll((scroll, 0)),
-        modal,
-    );
+    // Slice to the visible window so content never bleeds past the border.
+    let visible: Vec<Line> = all_lines
+        .into_iter()
+        .skip(scroll as usize)
+        .take(inner_h)
+        .collect();
+    frame.render_widget(Paragraph::new(visible).block(block), modal);
 }
 
 #[cfg(test)]
