@@ -188,11 +188,12 @@ Badge layout per row (left to right, omit zero-count items):
 
 ## Navigation Model
 
-Three focus zones, cycled with `Ctrl+Space` (avoiding `Tab` because shells use it). Keybindings are hardcoded in v1.0; configurability planned for a later release.
+Two focus zones, toggled with `Ctrl+Space` (avoiding `Tab` because shells use it). Keybindings are hardcoded in v1.0; configurability planned for a later release.
 
 1. **Sidebar** — repo/worktree tree
-2. **Tab bar** — terminal tabs or diff tab + mode selector
-3. **Content pane** — terminal or diff viewer
+2. **Content pane** — terminal or diff viewer
+
+`Enter` on a worktree row activates it *and* shifts focus to the content pane. The tab bar is not a separate focus zone — terminal tab switching is handled from within the content pane via `Ctrl+→` / `Ctrl+←`.
 
 ### Sidebar keys
 
@@ -200,7 +201,7 @@ Three focus zones, cycled with `Ctrl+Space` (avoiding `Tab` because shells use i
 |-----|--------|
 | `j` / `k` | Move up/down |
 | `h` / `l` or `←` / `→` | Collapse / expand repo |
-| `Enter` | Activate worktree in main pane |
+| `Enter` | Activate worktree and focus content pane |
 | `w` | Create new worktree (modal) |
 | `W` | Delete focused worktree (confirmation) |
 | `a` | Add repository (path prompt) |
@@ -216,7 +217,7 @@ Three focus zones, cycled with `Ctrl+Space` (avoiding `Tab` because shells use i
 | `Ctrl+W` | Kill current terminal (confirm) |
 | `Ctrl+→` / `Ctrl+←` | Next / prev terminal |
 | `Ctrl+[` | Enter scrollback mode |
-| `Ctrl+Space` | Shift focus to sidebar/tab bar |
+| `Ctrl+Space` | Shift focus to sidebar |
 | all else | Forwarded to shell |
 
 ### Terminal pane — Scrollback mode
@@ -247,6 +248,39 @@ Three focus zones, cycled with `Ctrl+Space` (avoiding `Tab` because shells use i
 | `?` | Help overlay |
 | `q` (sidebar/diff focus only) | Quit (confirm if unsaved diffs or running processes) |
 | `Ctrl+R` | Force refresh git + PR status |
+
+---
+
+## Worktree & Repository Modals
+
+### New Worktree (`w`)
+
+Two modes selectable at the top of the modal:
+
+- **New branch** (default) — text input for branch name; base branch selector defaults to the repo's `base_branch`.
+- **Existing branch** — scrollable picker populated from `git branch -a`. Local branches listed first, then remote-only entries.
+
+For a **remote-only** selection: auto-derive a local tracking name by appending a 6-character random slug — `<branch>-<slug>`. Retry up to 5 times on collision before prompting the user to enter a name manually.
+
+Worktree path derived as `<repo-root>/../<sanitized-branch-name>` (same convention as `git worktree add`).
+
+### Delete Worktree (`W`)
+
+Confirmation sequence:
+
+1. "Delete worktree at `<path>`?" `[Yes / No]`
+2. If yes: "Also delete branch `<name>` locally?" `[Yes / No]`
+3. If the branch has unmerged commits and the user chose Yes in step 2: "Branch has N unmerged commits. Force delete?" `[Force / Cancel]`
+4. If a GitHub token is available and the branch has an open PR: prepend a warning before step 2 — "Branch has open PR #N — deleting it will close the PR."
+
+### Add Repository (`a`)
+
+Path input with inline directory autocomplete:
+
+- As the user types, resolve the prefix against the filesystem and show up to 10 matching subdirectory entries below the input.
+- `~` is expanded to `$HOME` before lookup.
+- `↑` / `↓` navigate the candidate list; `Tab` selects the highlighted entry (appends it to the path and resets the list for the next segment).
+- `Enter` confirms the full path.
 
 ---
 
@@ -281,7 +315,7 @@ AppState
 │   ├── sidebar_focus: SidebarItem
 │   ├── active_worktree: Option<WorktreeId>
 │   ├── main_tab: MainTab                 (Terminals | Diff)
-│   ├── active_terminal: usize            ← per-worktree index
+│   ├── active_terminal: HashMap<WorktreeId, usize>  ← index per worktree
 │   ├── diff_mode: DiffMode
 │   ├── focus_zone: FocusZone
 │   ├── terminal_mode: TerminalMode       (Insert | Scrollback)
@@ -331,12 +365,14 @@ App
 
 | Task | Trigger | Produces |
 |------|---------|---------|
-| `git_watcher` | `notify` on `<worktree>/.git` | `Event::GitStatusChanged(WorktreeId)` |
+| `git_watcher` | `notify` on resolved gitdir (see note below) | `Event::GitStatusChanged(WorktreeId)` |
 | `github_poller` | 30 s per worktree with a branch | `Event::PrStatusChanged(WorktreeId, PrStatus)` |
 | `pty_reader` | one per terminal, reads master fd | `Event::TerminalOutput(TerminalId)` |
 | `diff_loader` | worktree activation / mode switch | `Event::DiffLoaded(WorktreeId, DiffMode, DiffState)` |
 
 All events flow through a single `mpsc::channel` to the UI thread. The UI coalesces `TerminalOutput` events at 60 Hz — raw PTY bytes arrive much faster than necessary for rendering.
+
+> **Linked worktree watcher.** In a linked worktree, `.git` is a file containing `gitdir: <main-repo>/.git/worktrees/<name>`. On startup, the watcher reads and resolves this pointer and watches the real gitdir path instead of the `.git` file itself. Ref and index changes that affect the whole repo (e.g. a push to another branch) are caught by also watching `<main-repo>/.git/refs/`; events are attributed to the correct worktree by matching the branch name recorded in `<main-repo>/.git/worktrees/<name>/HEAD`.
 
 ---
 
@@ -414,6 +450,22 @@ Worktrees discovered automatically via `git worktree list --porcelain`.
 
 ---
 
+## Design Backlog
+
+Items reviewed and deliberately deferred. Revisit at the indicated milestone.
+
+| Item | Notes | Target |
+|------|-------|--------|
+| **Kitty keyboard protocol** | Enables Shift+Enter and other modifier-key passthrough inside the embedded terminal. Query the outer terminal on startup; degrade silently if unsupported. | v1.1 |
+| **`vt100` reliability** | `vt100` has known gaps with bracketed paste, some mouse protocols, and uncommon OSC codes. If users report garbled output in neovim / lazygit / htop, evaluate replacing with `alacritty_terminal` or `termwiz`. | v1.1 eval |
+| **Diff search** | No way to find a specific change in large diffs. | v1.1 |
+| **Mouse support** | Click to focus panes, scroll wheel in terminal/diff, click tabs. | v1.1 |
+| **GitHub-only provider** | Limits adoption for GitLab/self-hosted Gitea users. Design the provider trait before adding the first alternative so it doesn't need to be retrofitted. | v1.2 |
+| **User-configurable keybindings** | | v1.2 |
+| **Session persistence (tmux backing)** | tmux plan already fully specced above. Core value proposition weakens without it — ships before major promotion. | v1.5 |
+
+---
+
 ## Phased Delivery
 
 | Phase | Scope |
@@ -427,7 +479,7 @@ Worktrees discovered automatically via `git worktree list --porcelain`.
 | **v0.7 — diff: branch** | Branch-vs-main mode, mode switcher |
 | **v0.8 — GitHub PR** | PR + CI badge polling via `octocrab` |
 | **v0.9 — worktree management** | Create/delete worktrees from TUI (`w` / `W`) |
-| **v1.0** | Config file polish, themes, stable keybindings, `--help` |
-| **v1.1** | Mouse support — click to focus panes, scroll wheel in terminal/diff, click tabs |
-| **v1.2** | User-configurable keybindings |
+| **v1.0** | Config polish, themes, stable keybindings, `--help`; fix per-worktree terminal index (`HashMap<WorktreeId, usize>`); fix linked-worktree git watcher; two focus zones (drop tab bar zone); new-worktree branch picker (local + remote, slug for remote-only); kill-worktree branch deletion with unmerged/PR warnings; add-repo path autocomplete |
+| **v1.1** | Mouse support; Kitty keyboard protocol (Shift+Enter + modifier passthrough, graceful degradation); diff search; evaluate `vt100` vs `alacritty_terminal` |
+| **v1.2** | User-configurable keybindings; GitHub provider abstraction (groundwork for GitLab/Gitea) |
 | **v1.5** | Optional tmux backing for session persistence |

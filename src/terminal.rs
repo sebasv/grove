@@ -11,7 +11,7 @@ use crate::async_evt::{Event, EventSender, WorktreeId};
 
 pub struct Terminal {
     pub parser: Arc<Mutex<vt100::Parser>>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     child_killer: Box<dyn ChildKiller + Send + Sync>,
     last_size: PtySize,
@@ -56,9 +56,9 @@ impl Terminal {
         std::mem::forget(child);
 
         let master = pair.master;
-        let writer = master
-            .take_writer()
-            .context("taking pty writer")?;
+        let writer = Arc::new(Mutex::new(
+            master.take_writer().context("taking pty writer")?,
+        ));
         let reader = master
             .try_clone_reader()
             .context("cloning pty reader")?;
@@ -69,7 +69,7 @@ impl Terminal {
             0,
         )));
 
-        spawn_reader_thread(reader, parser.clone(), wt_id, tx);
+        spawn_reader_thread(reader, parser.clone(), Arc::clone(&writer), wt_id, tx);
 
         Ok(Self {
             parser,
@@ -81,8 +81,9 @@ impl Terminal {
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+        let mut w = self.writer.lock().unwrap();
+        w.write_all(bytes)?;
+        w.flush()
     }
 
     pub fn resize(&mut self, size: PtySize) -> Result<()> {
@@ -111,6 +112,7 @@ impl Drop for Terminal {
 fn spawn_reader_thread(
     mut reader: Box<dyn std::io::Read + Send>,
     parser: Arc<Mutex<vt100::Parser>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     wt_id: WorktreeId,
     tx: EventSender,
 ) {
@@ -118,12 +120,28 @@ fn spawn_reader_thread(
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break, // EOF
+                Ok(0) => break,
                 Ok(n) => {
+                    // Detect ESC[6n (Device Status Report — cursor position query).
+                    // Applications like atuin send this to learn where they are on
+                    // screen.  The vt100 parser consumes it silently, so we must
+                    // synthesise the CPR response (ESC[row;colR) and inject it back
+                    // into the PTY before the application times out waiting.
+                    let has_cpr = buf[..n].windows(4).any(|w| w == b"\x1b[6n");
                     if let Ok(mut p) = parser.lock() {
                         p.process(&buf[..n]);
+                        if has_cpr {
+                            let pos = p.screen().cursor_position();
+                            let row = pos.0 + 1;
+                            let col = pos.1 + 1;
+                            let resp = format!("\x1b[{row};{col}R");
+                            if let Ok(mut w) = writer.lock() {
+                                let _ = w.write_all(resp.as_bytes());
+                                let _ = w.flush();
+                            }
+                        }
                     }
-                    let _ = wt_id; // reserved for v0.5 per-terminal routing
+                    let _ = wt_id;
                     if tx.send(Event::TerminalOutput).is_err() {
                         break;
                     }

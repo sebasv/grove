@@ -21,7 +21,15 @@ pub struct Config {
     #[serde(default)]
     pub general: General,
     #[serde(default)]
+    pub theme: ThemeConfig,
+    #[serde(default)]
     pub repos: Vec<RepoConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub struct ThemeConfig {
+    #[serde(default)]
+    pub base: crate::theme::ThemeName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -54,6 +62,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             general: General::default(),
+            theme: ThemeConfig::default(),
             repos: Vec::new(),
         }
     }
@@ -120,6 +129,7 @@ mod tests {
             general: General {
                 default_base_branch: "main".to_string(),
             },
+            theme: ThemeConfig::default(),
             repos: vec![
                 RepoConfig {
                     name: "grove".to_string(),
