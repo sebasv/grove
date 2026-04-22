@@ -38,12 +38,17 @@ pub struct ThemeConfig {
 pub struct General {
     #[serde(default = "default_base_branch")]
     pub default_base_branch: String,
+    /// When `true` and tmux is installed, embedded terminals run inside a
+    /// persistent tmux session so shells survive across grove restarts.
+    #[serde(default)]
+    pub tmux_backing: bool,
 }
 
 impl Default for General {
     fn default() -> Self {
         Self {
             default_base_branch: default_base_branch(),
+            tmux_backing: false,
         }
     }
 }
@@ -131,6 +136,7 @@ mod tests {
         let original = Config {
             general: General {
                 default_base_branch: "main".to_string(),
+                tmux_backing: false,
             },
             theme: ThemeConfig::default(),
             keys: crate::keymap::Keymap::default(),
