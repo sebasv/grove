@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -15,7 +15,7 @@ const DIVIDER: &str = "───────────────────
 pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
     let focused = app.ui.focus == FocusZone::Main;
     let border_style = if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(app.theme.accent)
     } else {
         Style::default().add_modifier(Modifier::DIM)
     };

@@ -19,6 +19,8 @@ pub struct AppState {
     pub terminals: HashMap<WorktreeId, WorktreeTerminals>,
     pub diffs: HashMap<WorktreeId, DiffState>,
     pub main_views: HashMap<WorktreeId, MainView>,
+    pub theme: crate::theme::Theme,
+    pub theme_name: crate::theme::ThemeName,
     pub should_quit: bool,
 }
 
@@ -129,6 +131,7 @@ pub struct UiState {
     pub active_worktree: Option<(usize, usize)>,
     pub modal: Option<Modal>,
     pub focus: FocusZone,
+    pub help_scroll: u16,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -181,27 +184,51 @@ pub enum Modal {
     ConfirmRemoveRepo { repo_idx: usize },
     NewWorktree(NewWorktreeModal),
     ConfirmRemoveWorktree { id: WorktreeId },
+    ConfirmDeleteBranch {
+        branch: String,
+        repo_root: PathBuf,
+        pr_number: Option<u32>,
+    },
+    ForceDeleteBranch {
+        branch: String,
+        repo_root: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NewWorktreeMode {
+    PickBranch,
+    #[default]
+    NewBranch,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct AddRepoModal {
     pub input: TextInput,
     pub error: Option<String>,
+    pub completions: Vec<String>,
+    pub completion_cursor: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NewWorktreeModal {
+    pub mode: NewWorktreeMode,
     pub input: TextInput,
     pub error: Option<String>,
     pub repo_idx: usize,
+    pub branches: Vec<crate::git::BranchEntry>,
+    pub branch_cursor: usize,
 }
 
 impl NewWorktreeModal {
     pub fn for_repo(repo_idx: usize) -> Self {
         Self {
+            mode: NewWorktreeMode::NewBranch,
             input: TextInput::default(),
             error: None,
             repo_idx,
+            branches: Vec::new(),
+            branch_cursor: 0,
         }
     }
 }
@@ -254,6 +281,15 @@ pub enum AppMessage {
     DiffContentDown,
     StageFocused,
     UnstageFocused,
+    CycleTheme,
+    BranchCursorUp,
+    BranchCursorDown,
+    SwitchWorktreeMode,
+    CompletionUp,
+    CompletionDown,
+    CompletionAccept,
+    HelpScrollUp,
+    HelpScrollDown,
     Quit,
     NoOp,
 }
@@ -284,6 +320,8 @@ impl AppState {
             terminals: HashMap::new(),
             diffs: HashMap::new(),
             main_views: HashMap::new(),
+            theme: crate::theme::Theme::default(),
+            theme_name: crate::theme::ThemeName::default(),
             should_quit: false,
         })
     }
@@ -334,6 +372,57 @@ impl AppState {
             AppMessage::DiffContentDown => self.scroll_diff(1),
             // Stage/UnstageFocused need side effects (subprocess + refresh); handled outside update.
             AppMessage::StageFocused | AppMessage::UnstageFocused => {}
+            AppMessage::CycleTheme => {
+                self.theme_name = self.theme_name.next();
+                self.theme = crate::theme::resolve(self.theme_name);
+            }
+            AppMessage::BranchCursorUp => {
+                if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
+                    m.branch_cursor = m.branch_cursor.saturating_sub(1);
+                }
+            }
+            AppMessage::BranchCursorDown => {
+                if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
+                    if !m.branches.is_empty() {
+                        m.branch_cursor = (m.branch_cursor + 1).min(m.branches.len() - 1);
+                    }
+                }
+            }
+            AppMessage::SwitchWorktreeMode => {
+                if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
+                    m.mode = match m.mode {
+                        NewWorktreeMode::PickBranch => NewWorktreeMode::NewBranch,
+                        NewWorktreeMode::NewBranch => NewWorktreeMode::PickBranch,
+                    };
+                    m.error = None;
+                }
+            }
+            AppMessage::CompletionUp => {
+                if let Some(Modal::AddRepo(m)) = &mut self.ui.modal {
+                    if !m.completions.is_empty() {
+                        m.completion_cursor = Some(match m.completion_cursor {
+                            None | Some(0) => 0,
+                            Some(n) => n - 1,
+                        });
+                    }
+                }
+            }
+            AppMessage::CompletionDown => {
+                if let Some(Modal::AddRepo(m)) = &mut self.ui.modal {
+                    if !m.completions.is_empty() {
+                        let max = m.completions.len() - 1;
+                        m.completion_cursor =
+                            Some(m.completion_cursor.map(|n| (n + 1).min(max)).unwrap_or(0));
+                    }
+                }
+            }
+            AppMessage::CompletionAccept => self.accept_completion(),
+            AppMessage::HelpScrollUp => {
+                self.ui.help_scroll = self.ui.help_scroll.saturating_sub(1);
+            }
+            AppMessage::HelpScrollDown => {
+                self.ui.help_scroll = self.ui.help_scroll.saturating_add(1);
+            }
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
         }
@@ -476,7 +565,18 @@ impl AppState {
         if repo_idx >= self.repos.len() {
             return;
         }
-        self.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal::for_repo(repo_idx)));
+        let branches = git::list_branches(&self.repos[repo_idx].root_path)
+            .unwrap_or_default();
+        let mode = if branches.is_empty() {
+            NewWorktreeMode::NewBranch
+        } else {
+            NewWorktreeMode::PickBranch
+        };
+        self.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal {
+            mode,
+            branches,
+            ..NewWorktreeModal::for_repo(repo_idx)
+        }));
     }
 
     fn open_confirm_remove_worktree(&mut self) {
@@ -525,12 +625,13 @@ impl AppState {
                 f(&mut m.input);
                 m.error = None;
             }
-            Some(Modal::NewWorktree(m)) => {
+            Some(Modal::NewWorktree(m)) if m.mode == NewWorktreeMode::NewBranch => {
                 f(&mut m.input);
                 m.error = None;
             }
-            _ => {}
+            _ => return,
         }
+        self.recompute_completions();
     }
 
     fn submit_modal(&mut self) {
@@ -539,8 +640,8 @@ impl AppState {
                 let raw = m.input.value().trim().to_string();
                 if let Err(err) = self.try_add_repo(&raw) {
                     self.ui.modal = Some(Modal::AddRepo(AddRepoModal {
-                        input: m.input,
                         error: Some(format!("{err:#}")),
+                        ..m
                     }));
                 }
             }
@@ -550,18 +651,52 @@ impl AppState {
                 }
             }
             Some(Modal::NewWorktree(m)) => {
-                let branch = m.input.value().trim().to_string();
-                if let Err(err) = self.try_create_worktree(m.repo_idx, &branch) {
+                if let Err(err) = self.try_create_worktree_modal(&m) {
                     self.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal {
-                        input: m.input,
                         error: Some(format!("{err:#}")),
-                        repo_idx: m.repo_idx,
+                        ..m
                     }));
                 }
             }
             Some(Modal::ConfirmRemoveWorktree { id }) => {
+                let info = self.repos.get(id.0).and_then(|repo| {
+                    repo.worktrees.get(id.1).map(|wt| {
+                        let pr_number = wt.pr.as_ref().and_then(|p| {
+                            matches!(
+                                p.state,
+                                crate::model::PrState::Open | crate::model::PrState::Draft
+                            )
+                            .then_some(p.number)
+                        });
+                        (wt.branch.clone(), repo.root_path.clone(), pr_number)
+                    })
+                });
                 if let Err(err) = self.try_remove_worktree(id) {
                     eprintln!("warning: failed to remove worktree: {err:#}");
+                    return;
+                }
+                if let Some((branch, repo_root, pr_number)) = info {
+                    self.ui.modal =
+                        Some(Modal::ConfirmDeleteBranch { branch, repo_root, pr_number });
+                }
+            }
+            Some(Modal::ConfirmDeleteBranch { branch, repo_root, pr_number: _ }) => {
+                match git::delete_branch(&repo_root, &branch) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        let msg = format!("{err:#}");
+                        if msg.contains("not fully merged") {
+                            self.ui.modal =
+                                Some(Modal::ForceDeleteBranch { branch, repo_root });
+                        } else {
+                            eprintln!("warning: failed to delete branch {branch}: {err:#}");
+                        }
+                    }
+                }
+            }
+            Some(Modal::ForceDeleteBranch { branch, repo_root }) => {
+                if let Err(err) = git::force_delete_branch(&repo_root, &branch) {
+                    eprintln!("warning: failed to force-delete branch {branch}: {err:#}");
                 }
             }
             other => {
@@ -570,21 +705,50 @@ impl AppState {
         }
     }
 
-    fn try_create_worktree(&mut self, repo_idx: usize, branch: &str) -> Result<()> {
-        if branch.is_empty() {
-            anyhow::bail!("branch name cannot be empty");
-        }
+    fn try_create_worktree_modal(&mut self, m: &NewWorktreeModal) -> Result<()> {
+        let repo_idx = m.repo_idx;
         let Some(repo) = self.repos.get(repo_idx) else {
             anyhow::bail!("repo not found");
         };
-        let path =
-            git::derive_worktree_path(&repo.root_path, &repo.name, branch);
-        git::create_worktree(&repo.root_path, branch, &path, &repo.base_branch)?;
+        let repo_root = repo.root_path.clone();
+        let repo_name = repo.name.clone();
+        let base_branch = repo.base_branch.clone();
 
-        // Re-list worktrees for the repo so the new one appears.
+        match m.mode {
+            NewWorktreeMode::NewBranch => {
+                let branch = m.input.value().trim();
+                if branch.is_empty() {
+                    anyhow::bail!("branch name cannot be empty");
+                }
+                let path = git::derive_worktree_path(&repo_root, &repo_name, branch);
+                git::create_worktree(&repo_root, branch, &path, &base_branch)?;
+            }
+            NewWorktreeMode::PickBranch => {
+                let Some(entry) = m.branches.get(m.branch_cursor) else {
+                    anyhow::bail!("no branch selected");
+                };
+                let path = git::derive_worktree_path(&repo_root, &repo_name, &entry.name);
+                if entry.is_remote_only() {
+                    let remote = entry.remote.as_deref().unwrap_or("origin");
+                    let local_name = generate_unique_local_name(
+                        &self.repos[repo_idx],
+                        &entry.name,
+                    )?;
+                    git::create_worktree_from_remote(
+                        &repo_root,
+                        remote,
+                        &entry.name,
+                        &local_name,
+                        &path,
+                    )?;
+                } else {
+                    git::create_worktree_from_existing(&repo_root, &entry.name, &path)?;
+                }
+            }
+        }
+
         let new_list = git::list_worktrees(&self.repos[repo_idx].root_path)?;
         self.repos[repo_idx].worktrees = new_list;
-        // Move cursor to the newly created worktree (last in list).
         let last = self.repos[repo_idx].worktrees.len().saturating_sub(1);
         self.ui.cursor = Some(SidebarCursor::Worktree {
             repo: repo_idx,
@@ -779,8 +943,11 @@ impl AppState {
     fn toggle_help(&mut self) {
         self.ui.modal = match self.ui.modal.take() {
             Some(Modal::Help) => None,
-            None => Some(Modal::Help),
-            other => other, // another modal open — leave it alone
+            None => {
+                self.ui.help_scroll = 0;
+                Some(Modal::Help)
+            }
+            other => other,
         };
     }
 
@@ -908,6 +1075,49 @@ impl AppState {
             }
         }
     }
+
+    fn recompute_completions(&mut self) {
+        let val = if let Some(Modal::AddRepo(m)) = &self.ui.modal {
+            Some(m.input.value().to_string())
+        } else {
+            None
+        };
+        let Some(v) = val else { return };
+        let comps = list_matching_dirs(&v);
+        if let Some(Modal::AddRepo(m)) = &mut self.ui.modal {
+            m.completions = comps;
+            m.completion_cursor = None;
+        }
+    }
+
+    fn accept_completion(&mut self) {
+        let info = if let Some(Modal::AddRepo(m)) = &self.ui.modal {
+            m.completion_cursor.and_then(|cursor| {
+                m.completions
+                    .get(cursor)
+                    .map(|dir| (dir.clone(), m.input.value().to_string()))
+            })
+        } else {
+            None
+        };
+        let Some((dir, current)) = info else { return };
+        let base = match current.rfind('/') {
+            Some(pos) => current[..=pos].to_string(),
+            None => String::new(),
+        };
+        let new_value = format!("{base}{dir}/");
+        let comps = list_matching_dirs(&new_value);
+        let mut new_input = TextInput::default();
+        for c in new_value.chars() {
+            new_input.insert_char(c);
+        }
+        if let Some(Modal::AddRepo(m)) = &mut self.ui.modal {
+            m.input = new_input;
+            m.completion_cursor = None;
+            m.error = None;
+            m.completions = comps;
+        }
+    }
 }
 
 fn resolve_repo_path(raw: &str) -> Result<PathBuf> {
@@ -933,6 +1143,64 @@ fn home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("HOME environment variable not set"))
+}
+
+fn list_matching_dirs(prefix: &str) -> Vec<String> {
+    const MAX: usize = 10;
+    let expanded = if prefix == "~" || prefix.is_empty() {
+        match std::env::var_os("HOME") {
+            Some(h) => format!("{}/", PathBuf::from(h).display()),
+            None => return Vec::new(),
+        }
+    } else if let Some(rest) = prefix.strip_prefix("~/") {
+        match std::env::var_os("HOME") {
+            Some(h) => format!("{}/{rest}", PathBuf::from(h).display()),
+            None => prefix.to_string(),
+        }
+    } else {
+        prefix.to_string()
+    };
+
+    let (dir_part, segment) = match expanded.rfind('/') {
+        Some(pos) => (&expanded[..=pos], &expanded[pos + 1..]),
+        None => ("./", expanded.as_str()),
+    };
+    let dir = PathBuf::from(dir_part);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut matches: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().ok().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
+        .filter(|name| name.starts_with(segment))
+        .collect();
+    matches.sort();
+    matches.truncate(MAX);
+    matches
+}
+
+fn generate_unique_local_name(repo: &crate::model::Repo, branch_name: &str) -> Result<String> {
+    let existing: std::collections::HashSet<&str> =
+        repo.worktrees.iter().map(|wt| wt.branch.as_str()).collect();
+    for _ in 0..5 {
+        let slug = random_slug();
+        let candidate = format!("{branch_name}-{slug}");
+        let path = git::derive_worktree_path(&repo.root_path, &repo.name, &candidate);
+        if !existing.contains(candidate.as_str()) && !path.exists() {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("could not generate a unique local branch name after 5 attempts")
+}
+
+fn random_slug() -> String {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("{:06x}", n & 0x00ff_ffff)
 }
 
 fn load_repos(config: &Config) -> Vec<Repo> {
@@ -1022,6 +1290,8 @@ impl AppState {
             terminals: HashMap::new(),
             diffs: HashMap::new(),
             main_views: HashMap::new(),
+            theme: crate::theme::Theme::default(),
+            theme_name: crate::theme::ThemeName::default(),
             should_quit: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
@@ -1037,6 +1307,8 @@ impl AppState {
             terminals: HashMap::new(),
             diffs: HashMap::new(),
             main_views: HashMap::new(),
+            theme: crate::theme::Theme::default(),
+            theme_name: crate::theme::ThemeName::default(),
             should_quit: false,
         }
     }

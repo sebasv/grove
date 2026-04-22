@@ -84,7 +84,8 @@ pub fn spawn_diff_refresh(
     });
 }
 
-/// Start watching `<repo_root>/.git/` and emit `Event::RepoDirty(repo_idx)`
+/// Start watching `<repo_root>/.git/` (recursively, to catch linked-worktree
+/// index changes in `.git/worktrees/<name>/`) and emit `Event::RepoDirty(repo_idx)`
 /// when it changes (debounced at 150 ms).  Returns an opaque handle that must
 /// be kept alive for the duration of the watch — dropping it stops events.
 pub fn spawn_repo_watcher(
@@ -101,7 +102,7 @@ pub fn spawn_repo_watcher(
         .context("creating fs debouncer")?;
     debouncer
         .watcher()
-        .watch(&dot_git, RecursiveMode::NonRecursive)
+        .watch(&dot_git, RecursiveMode::Recursive)
         .with_context(|| format!("watching {}", dot_git.display()))?;
 
     // Bridge std::mpsc (blocking) to the async tokio channel via a background
