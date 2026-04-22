@@ -1,17 +1,70 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
+use tui_term::widget::PseudoTerminal;
 
-use crate::app::AppState;
+use crate::app::{AppState, FocusZone};
 
 const DIVIDER: &str = "────────────────────────────────────────";
 
-pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
+/// Render the right-hand main pane and return the inner Rect (minus the
+/// bordering block) so callers can size the embedded PTY to match.
+pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
+    let focused = app.ui.focus == FocusZone::Main;
+    let border_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().add_modifier(Modifier::DIM)
+    };
+    let title = main_pane_title(app);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Try to render a terminal first. If none, fall back to the informational
+    // placeholder content.
+    if let Some(id) = app.ui.active_worktree {
+        if let Some(term) = app.terminals.get(&id) {
+            if let Ok(parser) = term.parser.lock() {
+                frame.render_widget(PseudoTerminal::new(parser.screen()), inner);
+                return inner;
+            }
+        }
+    }
+
+    render_placeholder(frame, inner, app);
+    inner
+}
+
+fn main_pane_title(app: &AppState) -> String {
+    match app.ui.active_worktree {
+        Some((r, w)) => {
+            let name = app
+                .repos
+                .get(r)
+                .map(|r| r.name.as_str())
+                .unwrap_or("?");
+            let branch = app
+                .repos
+                .get(r)
+                .and_then(|repo| repo.worktrees.get(w))
+                .map(|wt| wt.branch.as_str())
+                .unwrap_or("?");
+            format!(" {name} · {branch} ")
+        }
+        None => " grove ".to_string(),
+    }
+}
+
+fn render_placeholder(frame: &mut Frame, area: Rect, app: &AppState) {
     let lines = match app.ui.active_worktree {
         None => empty_lines(),
-        Some((repo_idx, wt_idx)) => active_lines(app, repo_idx, wt_idx),
+        Some((r, w)) => active_lines_without_terminal(app, r, w),
     };
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -21,13 +74,19 @@ fn empty_lines() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from("  Select a worktree from the sidebar."),
         Line::from("  (↑↓ or j/k to move, Enter to activate)"),
+        Line::from(""),
+        Line::from("  Ctrl+Space cycles focus between sidebar and main."),
     ]
 }
 
-fn active_lines(app: &AppState, repo_idx: usize, wt_idx: usize) -> Vec<Line<'static>> {
-    let repo = &app.repos[repo_idx];
-    let wt = &repo.worktrees[wt_idx];
+fn active_lines_without_terminal(app: &AppState, r: usize, w: usize) -> Vec<Line<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
+    let Some(repo) = app.repos.get(r) else {
+        return empty_lines();
+    };
+    let Some(wt) = repo.worktrees.get(w) else {
+        return empty_lines();
+    };
     vec![
         Line::from(""),
         Line::styled("  Active worktree", bold),
@@ -42,8 +101,8 @@ fn active_lines(app: &AppState, repo_idx: usize, wt_idx: usize) -> Vec<Line<'sta
         ]),
         Line::from(format!("  path:    {}", wt.path.display())),
         Line::from(""),
-        Line::from("  In later phases this pane will show embedded"),
-        Line::from("  terminals and the diff viewer."),
+        Line::from("  Press Enter to start a shell here."),
+        Line::from("  Ctrl+Space to return to the sidebar."),
     ]
 }
 
@@ -57,7 +116,9 @@ mod tests {
         let backend = TestBackend::new(60, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| super::render(frame, frame.area(), app))
+            .draw(|frame| {
+                super::render(frame, frame.area(), app);
+            })
             .unwrap();
         terminal.backend().to_string()
     }
@@ -69,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn shows_details_when_worktree_active() {
+    fn shows_details_when_worktree_active_without_terminal() {
         let mut app = AppState::fixture();
         app.ui.cursor = Some(SidebarCursor::Worktree {
             repo: 0,

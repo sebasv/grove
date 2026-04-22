@@ -1,4 +1,5 @@
 mod add_repo;
+mod badges;
 mod confirm;
 mod help;
 mod main_pane;
@@ -12,14 +13,16 @@ use crate::app::{AppState, Modal};
 
 const SIDEBAR_WIDTH: u16 = 32;
 
-pub fn render(frame: &mut Frame, app: &AppState) {
+/// Render the whole frame and return the Rect of the main pane's interior
+/// (used by the caller to sync PTY size on resize).
+pub fn render(frame: &mut Frame, app: &AppState) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(0)])
         .split(frame.area());
 
     sidebar::render(frame, chunks[0], app);
-    main_pane::render(frame, chunks[1], app);
+    let inner = main_pane::render(frame, chunks[1], app);
 
     if let Some(modal) = &app.ui.modal {
         match modal {
@@ -32,6 +35,8 @@ pub fn render(frame: &mut Frame, app: &AppState) {
             }
         }
     }
+
+    inner
 }
 
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

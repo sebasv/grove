@@ -36,7 +36,9 @@ mod tests {
         let backend = TestBackend::new(70, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| crate::ui::render(frame, app))
+            .draw(|frame| {
+                crate::ui::render(frame, app);
+            })
             .unwrap();
         terminal.backend().to_string()
     }

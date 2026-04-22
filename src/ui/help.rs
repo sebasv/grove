@@ -7,7 +7,7 @@ use ratatui::Frame;
 use crate::ui::centered_rect;
 
 pub fn render(frame: &mut Frame, area: Rect) {
-    let modal = centered_rect(54, 16, area);
+    let modal = centered_rect(56, 18, area);
     frame.render_widget(Clear, modal);
 
     let block = Block::default().borders(Borders::ALL).title(" Help ");
@@ -20,10 +20,12 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    Enter             activate worktree"),
         Line::from("    a                 add repository"),
         Line::from("    R                 remove repository"),
+        Line::from("    r                 refresh git status"),
         Line::from(""),
         Line::styled("  Global", bold),
+        Line::from("    Ctrl+Space        cycle focus (sidebar ↔ main)"),
         Line::from("    ?                 toggle this help"),
-        Line::from("    q                 quit"),
+        Line::from("    q                 quit (sidebar focus only)"),
         Line::from(""),
         Line::from("  (Esc or ? to close)"),
     ];
@@ -43,7 +45,9 @@ mod tests {
         let backend = TestBackend::new(70, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| crate::ui::render(frame, &app))
+            .draw(|frame| {
+                crate::ui::render(frame, &app);
+            })
             .unwrap();
         insta::assert_snapshot!(terminal.backend());
     }

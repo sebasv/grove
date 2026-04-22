@@ -1,12 +1,18 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{AppState, SidebarCursor};
+use crate::model::WorktreeStatus;
+use crate::ui::badges::{badge_spans, badge_width};
 
+const SIDEBAR_WIDTH: usize = 32;
 const DIVIDER: &str = "────────────────────────────";
+/// Columns consumed by the fixed prefix of a worktree row: marker + 2 spaces
+/// + glyph + space. Everything after this is branch + padding + badges.
+const WORKTREE_PREFIX: usize = 5;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     let cursor = app.ui.cursor;
@@ -45,12 +51,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                         worktree: j,
                     });
                 let marker = if is_here { "▸" } else { " " };
-                let text = format!("{marker}  {branch_glyph} {}", wt.branch);
-                let line = if is_here {
-                    Line::styled(text, highlight)
-                } else {
-                    Line::from(text)
-                };
+                let line = worktree_line(
+                    marker,
+                    branch_glyph,
+                    &wt.branch,
+                    wt.status.as_ref(),
+                    is_here,
+                    highlight,
+                );
                 lines.push(line);
             }
         }
@@ -68,11 +76,66 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+fn worktree_line(
+    marker: &str,
+    branch_glyph: &str,
+    branch: &str,
+    status: Option<&WorktreeStatus>,
+    is_cursor: bool,
+    highlight: Style,
+) -> Line<'static> {
+    let prefix = format!("{marker}  {branch_glyph} ");
+    let status_spans = status.map(|s| badge_spans(s)).unwrap_or_default();
+    let status_cols = if status_spans.is_empty() {
+        0
+    } else {
+        badge_width(&status_spans) + 1 // one-space gap before badges
+    };
+    let branch_budget = SIDEBAR_WIDTH
+        .saturating_sub(WORKTREE_PREFIX + status_cols);
+    let branch_shown = truncate(branch, branch_budget);
+
+    // Pad so badges end exactly at SIDEBAR_WIDTH.
+    let used = WORKTREE_PREFIX + branch_shown.chars().count();
+    let pad_cols = SIDEBAR_WIDTH
+        .saturating_sub(used + status_spans.iter().map(|s| s.content.chars().count()).sum::<usize>());
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw(prefix));
+    spans.push(Span::raw(branch_shown));
+    spans.push(Span::raw(" ".repeat(pad_cols)));
+    for s in status_spans {
+        spans.push(s);
+    }
+
+    let line = Line::from(spans);
+    if is_cursor {
+        line.style(highlight)
+    } else {
+        line
+    }
+}
+
+fn truncate(s: &str, max_cols: usize) -> String {
+    let len = s.chars().count();
+    if len <= max_cols {
+        return s.to_string();
+    }
+    if max_cols == 0 {
+        return String::new();
+    }
+    let keep = max_cols - 1;
+    let mut t: String = s.chars().take(keep).collect();
+    t.push('…');
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     use crate::app::{AppMessage, AppState, Direction, SidebarCursor};
+    use crate::model::WorktreeStatus;
 
     fn render_to_string(app: &AppState) -> String {
         let backend = TestBackend::new(32, 20);
@@ -81,6 +144,28 @@ mod tests {
             .draw(|frame| super::render(frame, frame.area(), app))
             .unwrap();
         terminal.backend().to_string()
+    }
+
+    fn fixture_with_statuses() -> AppState {
+        let mut app = AppState::fixture();
+        app.repos[0].worktrees[0].status = Some(WorktreeStatus::default());
+        app.repos[0].worktrees[1].status = Some(WorktreeStatus {
+            staged: 4,
+            ahead: 1,
+            ..WorktreeStatus::default()
+        });
+        app.repos[0].worktrees[2].status = Some(WorktreeStatus {
+            modified: 2,
+            conflicts: 1,
+            ..WorktreeStatus::default()
+        });
+        app.repos[1].worktrees[0].status = Some(WorktreeStatus::default());
+        app.repos[1].worktrees[1].status = Some(WorktreeStatus {
+            ahead: 1,
+            behind: 2,
+            ..WorktreeStatus::default()
+        });
+        app
     }
 
     #[test]
@@ -118,6 +203,24 @@ mod tests {
     fn empty_state_shows_add_hint() {
         use std::path::PathBuf;
         let app = AppState::empty_fixture(PathBuf::from("/tmp/grove-test-config.toml"));
+        insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn worktrees_with_statuses_show_badges() {
+        let app = fixture_with_statuses();
+        insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn long_branch_name_is_truncated_when_badges_present() {
+        let mut app = AppState::fixture();
+        app.repos[0].worktrees[1].branch = "feature/this-is-a-very-long-branch".to_string();
+        app.repos[0].worktrees[1].status = Some(WorktreeStatus {
+            staged: 4,
+            ahead: 2,
+            ..WorktreeStatus::default()
+        });
         insta::assert_snapshot!(render_to_string(&app));
     }
 }

@@ -1,9 +1,11 @@
 mod app;
+mod async_evt;
 mod config;
 mod git;
 mod model;
 mod paths;
 mod state;
+mod terminal;
 mod ui;
 
 use std::io::{self, Stdout};
@@ -14,17 +16,25 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use portable_pty::PtySize;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{AppMessage, AppState, Direction, Modal};
+use crate::app::{AppMessage, AppState, Direction, FocusZone, Modal};
+use crate::async_evt::{Event, EventReceiver, EventSender, WorktreeId};
 use crate::config::Config;
 use crate::paths::AppPaths;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
+
+enum InputAction {
+    Message(AppMessage),
+    PtyBytes(Vec<u8>),
+    Noop,
+}
 
 #[derive(Parser)]
 #[command(name = "grove", version, about)]
@@ -43,7 +53,17 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    match run_cli() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("error: failed to start async runtime: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match rt.block_on(run_cli()) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -52,7 +72,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_cli() -> Result<ExitCode> {
+async fn run_cli() -> Result<ExitCode> {
     let cli = Cli::parse();
     let paths = AppPaths::resolve()?;
     let config_path = cli
@@ -80,7 +100,13 @@ fn run_cli() -> Result<ExitCode> {
 
     install_panic_hook();
     let mut tui = init_terminal()?;
-    let result = run(&mut tui, &mut app);
+
+    let (tx, rx) = async_evt::channel();
+    async_evt::spawn_terminal_reader(tx.clone());
+    let _watchers = spawn_watchers(&app, &tx);
+    refresh_all_statuses(&app, &tx);
+
+    let result = run(&mut tui, &mut app, rx, tx).await;
     restore_terminal()?;
     result?;
 
@@ -90,30 +116,193 @@ fn run_cli() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run(tui: &mut Tui, app: &mut AppState) -> Result<()> {
+async fn run(
+    tui: &mut Tui,
+    app: &mut AppState,
+    mut rx: EventReceiver,
+    tx: EventSender,
+) -> Result<()> {
     loop {
-        tui.draw(|frame| ui::render(frame, app))?;
+        let main_pane_size = draw(tui, app)?;
+        resize_active_terminal(app, main_pane_size);
 
-        if let Event::Key(key) = event::read()? {
-            let msg = key_to_message(key, app.ui.modal.as_ref());
-            app.update(msg);
-            if app.should_quit {
-                break;
+        let Some(event) = rx.recv().await else {
+            break;
+        };
+        match event {
+            Event::Input(key) => {
+                handle_input(key, app, &tx);
+                if app.should_quit {
+                    break;
+                }
+            }
+            Event::RepoDirty(repo_idx) => {
+                refresh_repo_statuses(repo_idx, app, &tx);
+            }
+            Event::StatusReady(id, status) => {
+                app.set_worktree_status(id, status);
+            }
+            Event::TerminalOutput => {
+                // Parser advanced; next draw picks it up.
             }
         }
     }
     Ok(())
 }
 
-fn key_to_message(key: KeyEvent, modal: Option<&Modal>) -> AppMessage {
-    if key.kind != KeyEventKind::Press {
-        return AppMessage::NoOp;
+fn draw(tui: &mut Tui, app: &AppState) -> Result<PtySize> {
+    let mut main_size = PtySize::default();
+    tui.draw(|frame| {
+        let rect = ui::render(frame, app);
+        main_size = PtySize {
+            rows: rect.height,
+            cols: rect.width,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+    })?;
+    Ok(main_size)
+}
+
+fn resize_active_terminal(app: &mut AppState, size: PtySize) {
+    if size.rows == 0 || size.cols == 0 {
+        return;
     }
-    match modal {
-        None => default_keys(key),
-        Some(Modal::Help) => help_keys(key),
-        Some(Modal::AddRepo(_)) => add_repo_keys(key),
-        Some(Modal::ConfirmRemoveRepo { .. }) => confirm_keys(key),
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    if let Some(term) = app.terminals.get_mut(&id) {
+        let _ = term.resize(size);
+    }
+}
+
+fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
+    let action = key_to_action(key, app);
+    match action {
+        InputAction::Message(msg) => {
+            let is_activate = matches!(msg, AppMessage::Activate);
+            let is_refresh = matches!(msg, AppMessage::RefreshAll);
+            if is_refresh {
+                refresh_all_statuses(app, tx);
+            } else {
+                app.update(msg);
+            }
+            if is_activate {
+                ensure_terminal_for_active(app, tx);
+            }
+        }
+        InputAction::PtyBytes(bytes) => {
+            if let Some(id) = app.ui.active_worktree {
+                if let Some(term) = app.terminals.get_mut(&id) {
+                    let _ = term.write(&bytes);
+                }
+            }
+        }
+        InputAction::Noop => {}
+    }
+}
+
+fn ensure_terminal_for_active(app: &mut AppState, tx: &EventSender) {
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    if app.terminals.contains_key(&id) {
+        app.ui.focus = FocusZone::Main;
+        return;
+    }
+    let Some(wt) = app
+        .repos
+        .get(id.0)
+        .and_then(|repo| repo.worktrees.get(id.1))
+    else {
+        return;
+    };
+    let size = PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    match terminal::Terminal::spawn(&wt.path, size, id, tx.clone()) {
+        Ok(term) => {
+            app.terminals.insert(id, term);
+            app.ui.focus = FocusZone::Main;
+        }
+        Err(_err) => {
+            // Silent failure in v0.4 — TUI can't safely eprintln while raw-mode.
+            // Logging arrives in v1.0.
+        }
+    }
+}
+
+fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
+    if key.kind != KeyEventKind::Press {
+        return InputAction::Noop;
+    }
+
+    // Ctrl+Space cycles focus from any context except when typing into a modal
+    // (modals own all input to stay predictable).
+    if app.ui.modal.is_none()
+        && key.code == KeyCode::Char(' ')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        return InputAction::Message(AppMessage::CycleFocus);
+    }
+
+    if let Some(modal) = app.ui.modal.as_ref() {
+        return InputAction::Message(match modal {
+            Modal::Help => help_keys(key),
+            Modal::AddRepo(_) => add_repo_keys(key),
+            Modal::ConfirmRemoveRepo { .. } => confirm_keys(key),
+        });
+    }
+
+    match app.ui.focus {
+        FocusZone::Sidebar => InputAction::Message(default_keys(key)),
+        FocusZone::Main => {
+            // In Main, active-worktree keys go to the PTY; if no PTY, we only
+            // respond to Ctrl+Space (handled above).
+            if app.ui.active_worktree.is_some()
+                && app.terminals.contains_key(&app.ui.active_worktree.unwrap())
+            {
+                match terminal::key_to_pty_bytes(key) {
+                    Some(bytes) => InputAction::PtyBytes(bytes),
+                    None => InputAction::Noop,
+                }
+            } else {
+                InputAction::Noop
+            }
+        }
+    }
+}
+
+fn spawn_watchers(app: &AppState, tx: &EventSender) -> Vec<async_evt::RepoWatcher> {
+    let mut watchers = Vec::new();
+    for (i, repo) in app.repos.iter().enumerate() {
+        match async_evt::spawn_repo_watcher(i, repo.root_path.clone(), tx.clone()) {
+            Ok(w) => watchers.push(w),
+            Err(err) => {
+                eprintln!("warning: watch failed for {}: {err:#}", repo.name);
+            }
+        }
+    }
+    watchers
+}
+
+fn refresh_all_statuses(app: &AppState, tx: &EventSender) {
+    for (r, repo) in app.repos.iter().enumerate() {
+        for (w, wt) in repo.worktrees.iter().enumerate() {
+            async_evt::spawn_status_refresh((r, w), wt.path.clone(), tx.clone());
+        }
+    }
+}
+
+fn refresh_repo_statuses(repo_idx: usize, app: &AppState, tx: &EventSender) {
+    let Some(repo) = app.repos.get(repo_idx) else {
+        return;
+    };
+    for (w, wt) in repo.worktrees.iter().enumerate() {
+        async_evt::spawn_status_refresh((repo_idx, w), wt.path.clone(), tx.clone());
     }
 }
 
@@ -128,6 +317,7 @@ fn default_keys(key: KeyEvent) -> AppMessage {
         KeyCode::Enter => AppMessage::Activate,
         KeyCode::Char('a') => AppMessage::OpenAddRepo,
         KeyCode::Char('R') => AppMessage::OpenConfirmRemoveRepo,
+        KeyCode::Char('r') => AppMessage::RefreshAll,
         _ => AppMessage::NoOp,
     }
 }
@@ -163,6 +353,9 @@ fn confirm_keys(key: KeyEvent) -> AppMessage {
         _ => AppMessage::NoOp,
     }
 }
+
+#[allow(dead_code)] // kept for potential future direct use
+fn _silence(_: WorktreeId) {}
 
 fn print_paths(paths: &AppPaths) {
     println!("config: {}", paths.config_file.display());
