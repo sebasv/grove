@@ -14,7 +14,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 # ratatui 0.29 uses crossterm 0.28; we pin through the default feature set.
 directories = "5"
 futures = "0.3"
-git2 = { version = "0.19", default-features = false }
+git2 = { version = "0.20", default-features = false }
 notify-debouncer-mini = { version = "0.4", default-features = false }
 octocrab = "0.39"
 portable-pty = "0.8"
