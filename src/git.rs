@@ -206,16 +206,32 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path) -> Result<()> {
     )
 }
 
-pub fn derive_worktree_path(repo_root: &Path, repo_name: &str, branch: &str) -> PathBuf {
-    let parent = repo_root
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+/// Derive a path for a new worktree.
+///
+/// When `worktree_root` is `Some(root)` the path is `<root>/<repo_name>/<branch>`.
+/// When `None` the sibling strategy is used: `<repo_root_parent>/<repo_name>-<branch>`.
+/// A numeric suffix is appended when the candidate path already exists.
+pub fn derive_worktree_path(
+    repo_root: &Path,
+    repo_name: &str,
+    branch: &str,
+    worktree_root: Option<&Path>,
+) -> PathBuf {
     let sanitised = branch.replace('/', "-");
-    let mut candidate = parent.join(format!("{repo_name}-{sanitised}"));
+    let (base_dir, stem) = match worktree_root {
+        Some(root) => (root.join(repo_name), sanitised),
+        None => {
+            let parent = repo_root
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            (parent, format!("{repo_name}-{sanitised}"))
+        }
+    };
+    let mut candidate = base_dir.join(&stem);
     let mut counter = 2;
     while candidate.exists() {
-        candidate = parent.join(format!("{repo_name}-{sanitised}-{counter}"));
+        candidate = base_dir.join(format!("{stem}-{counter}"));
         counter += 1;
     }
     candidate
@@ -592,7 +608,7 @@ mod tests {
     fn create_and_remove_worktree_round_trip() {
         let dir = temp_dir();
         init_repo(&dir);
-        let new_path = derive_worktree_path(&dir, "parent", "feat/x");
+        let new_path = derive_worktree_path(&dir, "parent", "feat/x", None);
         create_worktree(&dir, "feat/x", &new_path, "main").unwrap();
         let wts = list_worktrees(&dir).unwrap();
         assert_eq!(wts.len(), 2);
@@ -605,14 +621,34 @@ mod tests {
 
     #[test]
     fn derive_worktree_path_avoids_collisions() {
-        // Isolate under a fresh subdir so we don't collide with anything in
-        // $TMPDIR left over from other runs.
         let dir = temp_dir();
         let repo_root = dir.join("origin");
         std::fs::create_dir_all(&repo_root).unwrap();
-        let first = derive_worktree_path(&repo_root, "repo", "branch");
+        let first = derive_worktree_path(&repo_root, "repo", "branch", None);
         std::fs::create_dir_all(&first).unwrap();
-        let second = derive_worktree_path(&repo_root, "repo", "branch");
+        let second = derive_worktree_path(&repo_root, "repo", "branch", None);
+        assert_ne!(first, second);
+        assert!(second.to_string_lossy().ends_with("-2"));
+    }
+
+    #[test]
+    fn derive_worktree_path_custom_root_uses_repo_subdir() {
+        let dir = temp_dir();
+        let repo_root = dir.join("origin");
+        let wt_root = dir.join("worktrees");
+        let path = derive_worktree_path(&repo_root, "myrepo", "feat/thing", Some(&wt_root));
+        // Should be <wt_root>/myrepo/feat-thing
+        assert_eq!(path, wt_root.join("myrepo").join("feat-thing"));
+    }
+
+    #[test]
+    fn derive_worktree_path_custom_root_avoids_collisions() {
+        let dir = temp_dir();
+        let repo_root = dir.join("origin");
+        let wt_root = dir.join("worktrees");
+        let first = derive_worktree_path(&repo_root, "repo", "branch", Some(&wt_root));
+        std::fs::create_dir_all(&first).unwrap();
+        let second = derive_worktree_path(&repo_root, "repo", "branch", Some(&wt_root));
         assert_ne!(first, second);
         assert!(second.to_string_lossy().ends_with("-2"));
     }
