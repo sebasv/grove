@@ -43,14 +43,13 @@ pub enum DiffLineKind {
     Del,
 }
 
-pub fn compute_branch_diff(
-    worktree_path: &Path,
-    base_branch: &str,
-) -> Result<Vec<DiffFile>> {
+pub fn compute_branch_diff(worktree_path: &Path, base_branch: &str) -> Result<Vec<DiffFile>> {
     let repo = Repository::open(worktree_path)
         .with_context(|| format!("opening {}", worktree_path.display()))?;
     let head = repo.head().context("resolving HEAD")?;
-    let head_oid = head.target().ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
+    let head_oid = head
+        .target()
+        .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
 
     // Prefer origin/<base> so the diff reflects the remote tip rather than a
     // potentially stale local branch (common in worktree workflows where the
@@ -106,10 +105,7 @@ pub fn compute_local_diff(worktree_path: &Path) -> Result<Vec<DiffFile>> {
         .context("diff index to workdir")?;
     collect_diff(&unstaged, false, &mut files);
 
-    let head_tree = match repo.head().and_then(|h| h.peel_to_tree()) {
-        Ok(t) => Some(t),
-        Err(_) => None,
-    };
+    let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
     if let Some(tree) = head_tree {
         let mut opts = DiffOptions::new();
         opts.context_lines(3);
@@ -154,8 +150,7 @@ fn collect_diff(diff: &git2::Diff<'_>, staged: bool, out: &mut Vec<DiffFile>) {
         None,
         Some(&mut |_delta, hunk| {
             if let Some(file) = scratch.borrow_mut().last_mut() {
-                let header =
-                    std::str::from_utf8(hunk.header()).unwrap_or("").to_string();
+                let header = std::str::from_utf8(hunk.header()).unwrap_or("").to_string();
                 file.hunks.push(DiffHunk {
                     header,
                     lines: Vec::new(),
@@ -171,8 +166,9 @@ fn collect_diff(diff: &git2::Diff<'_>, staged: bool, out: &mut Vec<DiffFile>) {
             };
             if let Some(file) = scratch.borrow_mut().last_mut() {
                 if let Some(hunk) = file.hunks.last_mut() {
-                    let content =
-                        std::str::from_utf8(line.content()).unwrap_or("").to_string();
+                    let content = std::str::from_utf8(line.content())
+                        .unwrap_or("")
+                        .to_string();
                     hunk.lines.push(DiffLine {
                         kind,
                         content: content.trim_end_matches('\n').to_string(),
@@ -190,12 +186,7 @@ fn collect_diff(diff: &git2::Diff<'_>, staged: bool, out: &mut Vec<DiffFile>) {
     out.extend(scratch.into_inner());
 }
 
-pub fn create_worktree(
-    repo_root: &Path,
-    branch: &str,
-    path: &Path,
-    base: &str,
-) -> Result<()> {
+pub fn create_worktree(repo_root: &Path, branch: &str, path: &Path, base: &str) -> Result<()> {
     run_git_cmd(
         repo_root,
         &[
@@ -248,13 +239,21 @@ pub fn derive_worktree_path(
 }
 
 pub fn stage_path(worktree_path: &Path, file_path: &Path) -> Result<()> {
-    run_git_cmd(worktree_path, &["add", "--", &file_path.display().to_string()])
+    run_git_cmd(
+        worktree_path,
+        &["add", "--", &file_path.display().to_string()],
+    )
 }
 
 pub fn unstage_path(worktree_path: &Path, file_path: &Path) -> Result<()> {
     run_git_cmd(
         worktree_path,
-        &["restore", "--staged", "--", &file_path.display().to_string()],
+        &[
+            "restore",
+            "--staged",
+            "--",
+            &file_path.display().to_string(),
+        ],
     )
 }
 
@@ -416,8 +415,8 @@ impl BranchEntry {
 }
 
 pub fn list_branches(repo_root: &Path) -> Result<Vec<BranchEntry>> {
-    let repo = Repository::open(repo_root)
-        .with_context(|| format!("opening {}", repo_root.display()))?;
+    let repo =
+        Repository::open(repo_root).with_context(|| format!("opening {}", repo_root.display()))?;
     let mut out = Vec::new();
     let mut local_names = std::collections::HashSet::new();
 
@@ -425,7 +424,10 @@ pub fn list_branches(repo_root: &Path) -> Result<Vec<BranchEntry>> {
         let (branch, _) = b?;
         if let Some(name) = branch.name()? {
             local_names.insert(name.to_string());
-            out.push(BranchEntry { name: name.to_string(), remote: None });
+            out.push(BranchEntry {
+                name: name.to_string(),
+                remote: None,
+            });
         }
     }
 
@@ -447,7 +449,10 @@ pub fn list_branches(repo_root: &Path) -> Result<Vec<BranchEntry>> {
 }
 
 pub fn create_worktree_from_existing(repo_root: &Path, branch: &str, path: &Path) -> Result<()> {
-    run_git_cmd(repo_root, &["worktree", "add", &path.display().to_string(), branch])
+    run_git_cmd(
+        repo_root,
+        &["worktree", "add", &path.display().to_string(), branch],
+    )
 }
 
 pub fn create_worktree_from_remote(
@@ -461,8 +466,11 @@ pub fn create_worktree_from_remote(
     run_git_cmd(
         repo_root,
         &[
-            "worktree", "add",
-            "--track", "-b", local_name,
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            local_name,
             &path.display().to_string(),
             &remote_ref,
         ],
@@ -717,7 +725,10 @@ mod tests {
     fn ahead_behind_counts_diverged_commits() {
         // Create "remote" bare repo and "local" clone; commit on local; verify ahead=1.
         let remote = temp_dir();
-        run_git_test(&remote, &["init", "--bare", "--quiet", "--initial-branch=main"]);
+        run_git_test(
+            &remote,
+            &["init", "--bare", "--quiet", "--initial-branch=main"],
+        );
 
         let local = temp_dir();
         run_git_test(

@@ -191,9 +191,13 @@ pub enum SidebarCursor {
 pub enum Modal {
     Help,
     AddRepo(AddRepoModal),
-    ConfirmRemoveRepo { repo_idx: usize },
+    ConfirmRemoveRepo {
+        repo_idx: usize,
+    },
     NewWorktree(NewWorktreeModal),
-    ConfirmRemoveWorktree { id: WorktreeId },
+    ConfirmRemoveWorktree {
+        id: WorktreeId,
+    },
     ConfirmDeleteBranch {
         branch: String,
         repo_root: PathBuf,
@@ -365,9 +369,7 @@ impl AppState {
             AppMessage::CloseTerminal => self.close_active_terminal(),
             AppMessage::NextTab => self.with_active_terminals(|t| t.next_tab()),
             AppMessage::PrevTab => self.with_active_terminals(|t| t.prev_tab()),
-            AppMessage::ToggleScrollback => {
-                self.with_active_terminals(|t| t.toggle_scrollback())
-            }
+            AppMessage::ToggleScrollback => self.with_active_terminals(|t| t.toggle_scrollback()),
             AppMessage::ScrollUp => self.with_active_terminals(|t| t.scroll(1)),
             AppMessage::ScrollDown => self.with_active_terminals(|t| t.scroll(-1)),
             AppMessage::ScrollPageUp => self.with_active_terminals(|t| t.scroll(20)),
@@ -539,7 +541,11 @@ impl AppState {
         };
     }
 
-    pub fn set_worktree_status(&mut self, id: (usize, usize), status: crate::model::WorktreeStatus) {
+    pub fn set_worktree_status(
+        &mut self,
+        id: (usize, usize),
+        status: crate::model::WorktreeStatus,
+    ) {
         let (r, w) = id;
         if let Some(repo) = self.repos.get_mut(r) {
             if let Some(wt) = repo.worktrees.get_mut(w) {
@@ -576,8 +582,7 @@ impl AppState {
         if repo_idx >= self.repos.len() {
             return;
         }
-        let branches = git::list_branches(&self.repos[repo_idx].root_path)
-            .unwrap_or_default();
+        let branches = git::list_branches(&self.repos[repo_idx].root_path).unwrap_or_default();
         let mode = if branches.is_empty() {
             NewWorktreeMode::NewBranch
         } else {
@@ -687,24 +692,28 @@ impl AppState {
                     return;
                 }
                 if let Some((branch, repo_root, pr_number)) = info {
-                    self.ui.modal =
-                        Some(Modal::ConfirmDeleteBranch { branch, repo_root, pr_number });
+                    self.ui.modal = Some(Modal::ConfirmDeleteBranch {
+                        branch,
+                        repo_root,
+                        pr_number,
+                    });
                 }
             }
-            Some(Modal::ConfirmDeleteBranch { branch, repo_root, pr_number: _ }) => {
-                match git::delete_branch(&repo_root, &branch) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        let msg = format!("{err:#}");
-                        if msg.contains("not fully merged") {
-                            self.ui.modal =
-                                Some(Modal::ForceDeleteBranch { branch, repo_root });
-                        } else {
-                            eprintln!("warning: failed to delete branch {branch}: {err:#}");
-                        }
+            Some(Modal::ConfirmDeleteBranch {
+                branch,
+                repo_root,
+                pr_number: _,
+            }) => match git::delete_branch(&repo_root, &branch) {
+                Ok(()) => {}
+                Err(err) => {
+                    let msg = format!("{err:#}");
+                    if msg.contains("not fully merged") {
+                        self.ui.modal = Some(Modal::ForceDeleteBranch { branch, repo_root });
+                    } else {
+                        eprintln!("warning: failed to delete branch {branch}: {err:#}");
                     }
                 }
-            }
+            },
             Some(Modal::ForceDeleteBranch { branch, repo_root }) => {
                 if let Err(err) = git::force_delete_branch(&repo_root, &branch) {
                     eprintln!("warning: failed to force-delete branch {branch}: {err:#}");
@@ -724,7 +733,7 @@ impl AppState {
             .repos
             .get(repo_idx)
             .and_then(|r| r.worktree_root.as_deref())
-            .or_else(|| self.config.general.worktree_root.as_deref())?;
+            .or(self.config.general.worktree_root.as_deref())?;
         expand_path(raw).ok()
     }
 
@@ -1698,7 +1707,10 @@ mod tests {
         }
         app.update(AppMessage::CloseModal);
         assert!(app.ui.modal.is_none());
-        assert!(!config_path.exists(), "config must not be written on cancel");
+        assert!(
+            !config_path.exists(),
+            "config must not be written on cancel"
+        );
         assert!(app.repos.is_empty());
     }
 
@@ -1747,7 +1759,19 @@ mod tests {
         // Create an initial commit so `git worktree list` has real output.
         std::fs::write(path.join("README.md"), "test").unwrap();
         run_git(path, &["add", "."]);
-        run_git(path, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init", "--quiet"]);
+        run_git(
+            path,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "init",
+                "--quiet",
+            ],
+        );
     }
 
     fn run_git(path: &std::path::Path, args: &[&str]) {

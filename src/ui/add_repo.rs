@@ -73,21 +73,14 @@ pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal) {
             .collect();
         let mut state = ListState::default();
         state.select(modal.completion_cursor);
-        frame.render_stateful_widget(
-            List::new(items),
-            rows[4],
-            &mut state,
-        );
+        frame.render_stateful_widget(List::new(items), rows[4], &mut state);
         5 // base_row index for the gap after completions
     } else {
         3
     };
 
     if let Some(err) = &modal.error {
-        let line = Line::styled(
-            format!("  ! {err}"),
-            Style::default().fg(Color::Red),
-        );
+        let line = Line::styled(format!("  ! {err}"), Style::default().fg(Color::Red));
         frame.render_widget(Paragraph::new(line), rows[base_row + 1]);
     }
 
@@ -111,12 +104,7 @@ pub fn render_new_worktree(
     }
 }
 
-fn render_pick_branch(
-    frame: &mut Frame,
-    area: Rect,
-    modal: &NewWorktreeModal,
-    repo_name: &str,
-) {
+fn render_pick_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, repo_name: &str) {
     let visible = 8usize;
     let height = (visible + 6) as u16;
     let modal_area = centered_rect(66, height, area);
@@ -128,20 +116,17 @@ fn render_pick_branch(
     frame.render_widget(block, modal_area);
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // blank
+        Constraint::Length(1),              // blank
         Constraint::Length(visible as u16), // branch list
-        Constraint::Length(1), // blank
-        Constraint::Length(1), // error
-        Constraint::Length(1), // blank
-        Constraint::Length(1), // hint
+        Constraint::Length(1),              // blank
+        Constraint::Length(1),              // error
+        Constraint::Length(1),              // blank
+        Constraint::Length(1),              // hint
     ])
     .split(inner);
 
     if modal.branches.is_empty() {
-        frame.render_widget(
-            Paragraph::new("  No existing branches found."),
-            rows[1],
-        );
+        frame.render_widget(Paragraph::new("  No existing branches found."), rows[1]);
     } else {
         let scroll_offset = modal
             .branch_cursor
@@ -195,12 +180,7 @@ fn render_pick_branch(
     frame.render_widget(Paragraph::new(hint), rows[5]);
 }
 
-fn render_new_branch(
-    frame: &mut Frame,
-    area: Rect,
-    modal: &NewWorktreeModal,
-    repo_name: &str,
-) {
+fn render_new_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, repo_name: &str) {
     let modal_area = centered_rect(62, 11, area);
     frame.render_widget(Clear, modal_area);
     let title = format!(" New worktree in {repo_name} ");

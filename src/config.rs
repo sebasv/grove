@@ -18,7 +18,7 @@ default_base_branch = "main"
 # worktree_root = "~/worktrees"  # optional; overrides general.worktree_root
 "#;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub general: General,
@@ -66,16 +66,6 @@ pub struct RepoConfig {
     /// Per-repo override for worktree placement; inherits `general.worktree_root` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_root: Option<PathBuf>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: General::default(),
-            theme: ThemeConfig::default(),
-            repos: Vec::new(),
-        }
-    }
 }
 
 impl Config {

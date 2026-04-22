@@ -24,12 +24,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &DiffState, base_branch: &st
     render_content(frame, columns[1], state);
 }
 
-fn render_mode_header(
-    frame: &mut Frame,
-    area: Rect,
-    state: &DiffState,
-    base_branch: &str,
-) {
+fn render_mode_header(frame: &mut Frame, area: Rect, state: &DiffState, base_branch: &str) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let dim = Style::default().add_modifier(Modifier::DIM);
     let label = match state.mode {
@@ -50,7 +45,10 @@ fn render_file_list(frame: &mut Frame, area: Rect, state: &DiffState) {
     let mut lines: Vec<Line> = Vec::new();
 
     if state.files.is_empty() {
-        lines.push(Line::styled("  No local changes", Style::default().add_modifier(Modifier::DIM)));
+        lines.push(Line::styled(
+            "  No local changes",
+            Style::default().add_modifier(Modifier::DIM),
+        ));
         frame.render_widget(Paragraph::new(lines), area);
         return;
     }
@@ -111,7 +109,11 @@ fn render_content(frame: &mut Frame, area: Rect, state: &DiffState) {
     let del_style = Style::default().fg(Color::Red);
 
     let mut lines: Vec<Line> = Vec::new();
-    let scope = if file.staged { "[staged]" } else { "[unstaged]" };
+    let scope = if file.staged {
+        "[staged]"
+    } else {
+        "[unstaged]"
+    };
     lines.push(Line::from(vec![
         Span::styled(format!("  {}", file.path.display()), header_style),
         Span::raw("  "),
@@ -135,10 +137,7 @@ fn render_content(frame: &mut Frame, area: Rect, state: &DiffState) {
                 DiffLineKind::Del => del_style,
                 DiffLineKind::Context => Style::default(),
             };
-            lines.push(Line::styled(
-                format!("  {prefix}{}", line.content),
-                style,
-            ));
+            lines.push(Line::styled(format!("  {prefix}{}", line.content), style));
         }
     }
 

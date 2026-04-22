@@ -65,11 +65,7 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
     let has_more_above = scroll > 0;
 
     // Slice to the visible window so content never bleeds past the border.
-    let visible: Vec<Line> = all_lines
-        .into_iter()
-        .skip(scroll)
-        .take(inner_h)
-        .collect();
+    let visible: Vec<Line> = all_lines.into_iter().skip(scroll).take(inner_h).collect();
 
     let dim = Style::default().fg(Color::DarkGray);
     let mut block = block;

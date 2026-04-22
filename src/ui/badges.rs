@@ -77,7 +77,9 @@ pub fn append_pr_spans(pr: Option<&PrStatus>, spans: &mut Vec<Span<'static>>) {
         PrState::Draft => ("◐", Style::default().fg(Color::Yellow)),
         PrState::Merged => (
             "✓●",
-            Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::DIM),
         ),
         PrState::Closed => ("●", Style::default().add_modifier(Modifier::DIM)),
     };

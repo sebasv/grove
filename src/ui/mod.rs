@@ -49,15 +49,13 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
                 }
             }
             Modal::ConfirmRemoveWorktree { id } => {
-                if let Some(wt) = app
-                    .repos
-                    .get(id.0)
-                    .and_then(|r| r.worktrees.get(id.1))
-                {
+                if let Some(wt) = app.repos.get(id.0).and_then(|r| r.worktrees.get(id.1)) {
                     confirm::render_remove_worktree(frame, frame.area(), &wt.branch);
                 }
             }
-            Modal::ConfirmDeleteBranch { branch, pr_number, .. } => {
+            Modal::ConfirmDeleteBranch {
+                branch, pr_number, ..
+            } => {
                 confirm::render_delete_branch(frame, frame.area(), branch, *pr_number);
             }
             Modal::ForceDeleteBranch { branch, .. } => {

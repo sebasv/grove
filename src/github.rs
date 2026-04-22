@@ -181,10 +181,7 @@ async fn fetch_checks_rollup(
     let mut failing = false;
     for run in runs {
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        let conclusion = run
-            .get("conclusion")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let conclusion = run.get("conclusion").and_then(|v| v.as_str()).unwrap_or("");
         if status != "completed" {
             pending = true;
         } else {

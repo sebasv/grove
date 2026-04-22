@@ -87,21 +87,24 @@ fn worktree_line(
     highlight: Style,
 ) -> Line<'static> {
     let prefix = format!("{marker}  {branch_glyph} ");
-    let mut status_spans = status.map(|s| badge_spans(s)).unwrap_or_default();
+    let mut status_spans = status.map(badge_spans).unwrap_or_default();
     append_pr_spans(pr, &mut status_spans);
     let status_cols = if status_spans.is_empty() {
         0
     } else {
         badge_width(&status_spans) + 1 // one-space gap before badges
     };
-    let branch_budget = SIDEBAR_WIDTH
-        .saturating_sub(WORKTREE_PREFIX + status_cols);
+    let branch_budget = SIDEBAR_WIDTH.saturating_sub(WORKTREE_PREFIX + status_cols);
     let branch_shown = truncate(branch, branch_budget);
 
     // Pad so badges end exactly at SIDEBAR_WIDTH.
     let used = WORKTREE_PREFIX + branch_shown.chars().count();
-    let pad_cols = SIDEBAR_WIDTH
-        .saturating_sub(used + status_spans.iter().map(|s| s.content.chars().count()).sum::<usize>());
+    let pad_cols = SIDEBAR_WIDTH.saturating_sub(
+        used + status_spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum::<usize>(),
+    );
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(prefix));

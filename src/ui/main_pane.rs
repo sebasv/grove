@@ -23,7 +23,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> (Rect, Option<Re
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD)));
+        .title(Span::styled(
+            title,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -107,11 +110,7 @@ fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals)
 fn main_pane_title(app: &AppState) -> String {
     match app.ui.active_worktree {
         Some((r, w)) => {
-            let name = app
-                .repos
-                .get(r)
-                .map(|r| r.name.as_str())
-                .unwrap_or("?");
+            let name = app.repos.get(r).map(|r| r.name.as_str()).unwrap_or("?");
             let branch = app
                 .repos
                 .get(r)
