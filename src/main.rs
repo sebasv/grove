@@ -8,7 +8,7 @@ mod state;
 mod terminal;
 mod ui;
 
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::panic;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -171,8 +171,10 @@ fn resize_active_terminal(app: &mut AppState, size: PtySize) {
     let Some(id) = app.ui.active_worktree else {
         return;
     };
-    if let Some(term) = app.terminals.get_mut(&id) {
-        let _ = term.resize(size);
+    if let Some(ts) = app.terminals.get_mut(&id) {
+        if let Some(term) = ts.active_mut() {
+            let _ = term.resize(size);
+        }
     }
 }
 
@@ -182,6 +184,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
         InputAction::Message(msg) => {
             let is_activate = matches!(msg, AppMessage::Activate);
             let is_refresh = matches!(msg, AppMessage::RefreshAll);
+            let is_new_terminal = matches!(msg, AppMessage::NewTerminal);
             if is_refresh {
                 refresh_all_statuses(app, tx);
             } else {
@@ -190,11 +193,18 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
             if is_activate {
                 ensure_terminal_for_active(app, tx);
             }
+            if is_new_terminal {
+                if let Some(id) = app.ui.active_worktree {
+                    spawn_terminal_for(id, app, tx);
+                }
+            }
         }
         InputAction::PtyBytes(bytes) => {
             if let Some(id) = app.ui.active_worktree {
-                if let Some(term) = app.terminals.get_mut(&id) {
-                    let _ = term.write(&bytes);
+                if let Some(ts) = app.terminals.get_mut(&id) {
+                    if let Some(term) = ts.active_mut() {
+                        let _ = term.write(&bytes);
+                    }
                 }
             }
         }
@@ -210,6 +220,25 @@ fn ensure_terminal_for_active(app: &mut AppState, tx: &EventSender) {
         app.ui.focus = FocusZone::Main;
         return;
     }
+    spawn_terminal_for(id, app, tx);
+}
+
+fn log_to_file(msg: &str) {
+    if let Ok(paths) = AppPaths::resolve() {
+        if let Some(parent) = paths.log_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&paths.log_file)
+        {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+}
+
+fn spawn_terminal_for(id: WorktreeId, app: &mut AppState, tx: &EventSender) {
     let Some(wt) = app
         .repos
         .get(id.0)
@@ -223,16 +252,25 @@ fn ensure_terminal_for_active(app: &mut AppState, tx: &EventSender) {
         pixel_width: 0,
         pixel_height: 0,
     };
-    match terminal::Terminal::spawn(&wt.path, size, id, tx.clone()) {
-        Ok(term) => {
-            app.terminals.insert(id, term);
-            app.ui.focus = FocusZone::Main;
+    let term = match terminal::Terminal::spawn(&wt.path, size, id, tx.clone()) {
+        Ok(t) => t,
+        Err(err) => {
+            log_to_file(&format!(
+                "terminal spawn failed for worktree ({}, {}) at {}: {err:#}",
+                id.0,
+                id.1,
+                wt.path.display()
+            ));
+            return;
         }
-        Err(_err) => {
-            // Silent failure in v0.4 — TUI can't safely eprintln while raw-mode.
-            // Logging arrives in v1.0.
-        }
+    };
+    if let Some(ts) = app.terminals.get_mut(&id) {
+        ts.push(term);
+    } else {
+        app.terminals
+            .insert(id, crate::app::WorktreeTerminals::new(term));
     }
+    app.ui.focus = FocusZone::Main;
 }
 
 fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
@@ -259,20 +297,85 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
 
     match app.ui.focus {
         FocusZone::Sidebar => InputAction::Message(default_keys(key)),
-        FocusZone::Main => {
-            // In Main, active-worktree keys go to the PTY; if no PTY, we only
-            // respond to Ctrl+Space (handled above).
-            if app.ui.active_worktree.is_some()
-                && app.terminals.contains_key(&app.ui.active_worktree.unwrap())
-            {
-                match terminal::key_to_pty_bytes(key) {
-                    Some(bytes) => InputAction::PtyBytes(bytes),
-                    None => InputAction::Noop,
-                }
-            } else {
-                InputAction::Noop
-            }
+        FocusZone::Main => main_focus_action(key, app),
+    }
+}
+
+fn main_focus_action(key: KeyEvent, app: &AppState) -> InputAction {
+    // Reserved grove keys in Main — active in both Insert and Scrollback modes.
+    if let Some(msg) = main_reserved_keys(key) {
+        return InputAction::Message(msg);
+    }
+
+    let Some(id) = app.ui.active_worktree else {
+        return InputAction::Noop;
+    };
+    let Some(ts) = app.terminals.get(&id) else {
+        return InputAction::Noop;
+    };
+
+    match ts.mode {
+        crate::app::TerminalMode::Scrollback => {
+            InputAction::Message(scrollback_keys(key))
         }
+        crate::app::TerminalMode::Insert => match terminal::key_to_pty_bytes(key) {
+            Some(bytes) => InputAction::PtyBytes(bytes),
+            None => InputAction::Noop,
+        },
+    }
+}
+
+fn main_reserved_keys(key: KeyEvent) -> Option<AppMessage> {
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Ctrl+\ toggles scrollback; note that Ctrl+[ would collide with Esc.
+    if ctrl && matches!(key.code, KeyCode::Char('\\')) {
+        return Some(AppMessage::ToggleScrollback);
+    }
+    // Ctrl+t: new terminal tab (Ctrl+W: close). Ctrl beats Alt here because
+    // macOS terminals often swallow Option combos or remap them to Unicode.
+    if ctrl && matches!(key.code, KeyCode::Char('t')) {
+        return Some(AppMessage::NewTerminal);
+    }
+    if ctrl && matches!(key.code, KeyCode::Char('w')) {
+        return Some(AppMessage::CloseTerminal);
+    }
+    if alt {
+        return match key.code {
+            KeyCode::Char('t') => Some(AppMessage::NewTerminal),
+            KeyCode::Char('w') => Some(AppMessage::CloseTerminal),
+            KeyCode::Char('h') | KeyCode::Left => Some(AppMessage::PrevTab),
+            KeyCode::Char('l') | KeyCode::Right => Some(AppMessage::NextTab),
+            _ => None,
+        };
+    }
+    // macOS terminals that don't pass Option as Meta send Unicode characters
+    // instead: Option+t → '†', Option+w → '∑', Option+h → '˙', Option+l → '¬'.
+    // Map these to the same actions so the shortcuts work with default terminal
+    // settings on macOS.
+    if key.modifiers.is_empty() {
+        return match key.code {
+            KeyCode::Char('†') => Some(AppMessage::NewTerminal),
+            KeyCode::Char('∑') => Some(AppMessage::CloseTerminal),
+            KeyCode::Char('˙') => Some(AppMessage::PrevTab),
+            KeyCode::Char('¬') => Some(AppMessage::NextTab),
+            _ => None,
+        };
+    }
+    None
+}
+
+fn scrollback_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => AppMessage::ScrollDown,
+        KeyCode::Char('k') | KeyCode::Up => AppMessage::ScrollUp,
+        KeyCode::PageDown => AppMessage::ScrollPageDown,
+        KeyCode::PageUp => AppMessage::ScrollPageUp,
+        KeyCode::Char('g') => AppMessage::ScrollTop,
+        KeyCode::Char('G') => AppMessage::ScrollBottom,
+        KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('q') => AppMessage::ToggleScrollback,
+        _ => AppMessage::NoOp,
     }
 }
 
