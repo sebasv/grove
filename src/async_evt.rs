@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{Event as CEvent, EventStream, KeyEvent};
+use crossterm::event::{Event as CEvent, EventStream, KeyEvent, MouseEvent};
 use futures::StreamExt;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
@@ -15,6 +15,7 @@ pub type WorktreeId = (usize, usize);
 
 pub enum Event {
     Input(KeyEvent),
+    Mouse(MouseEvent),
     RepoDirty(RepoId),
     StatusReady(WorktreeId, WorktreeStatus),
     DiffReady(WorktreeId, Vec<crate::git::DiffFile>),
@@ -47,10 +48,18 @@ pub fn spawn_terminal_reader(tx: EventSender) {
         let mut stream = EventStream::new();
         while let Some(evt) = stream.next().await {
             let Ok(evt) = evt else { continue };
-            if let CEvent::Key(key) = evt {
-                if tx.send(Event::Input(key)).is_err() {
-                    break;
+            match evt {
+                CEvent::Key(key) => {
+                    if tx.send(Event::Input(key)).is_err() {
+                        break;
+                    }
                 }
+                CEvent::Mouse(mouse) => {
+                    if tx.send(Event::Mouse(mouse)).is_err() {
+                        break;
+                    }
+                }
+                _ => {}
             }
         }
     });
