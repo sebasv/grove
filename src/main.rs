@@ -18,7 +18,10 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -159,6 +162,9 @@ async fn run(
                     break;
                 }
             }
+            Event::Mouse(mouse) => {
+                handle_mouse(mouse, app, &tx);
+            }
             Event::RepoDirty(repo_idx) => {
                 refresh_repo_statuses(repo_idx, app, &tx);
                 // Re-trigger diff refresh for the active worktree if it's in
@@ -189,17 +195,24 @@ async fn run(
     Ok(())
 }
 
-fn draw(tui: &mut Tui, app: &AppState) -> Result<PtySize> {
+fn draw(tui: &mut Tui, app: &mut AppState) -> Result<PtySize> {
     let mut main_size = PtySize::default();
+    let mut layout_out = ui::RenderedLayout {
+        sidebar: ratatui::layout::Rect::default(),
+        main_inner: ratatui::layout::Rect::default(),
+    };
     tui.draw(|frame| {
-        let rect = ui::render(frame, app);
+        let layout = ui::render(frame, app);
         main_size = PtySize {
-            rows: rect.height,
-            cols: rect.width,
+            rows: layout.main_inner.height,
+            cols: layout.main_inner.width,
             pixel_width: 0,
             pixel_height: 0,
         };
+        layout_out = layout;
     })?;
+    app.layout.sidebar = layout_out.sidebar;
+    app.layout.main = layout_out.main_inner;
     Ok(main_size)
 }
 
@@ -214,6 +227,89 @@ fn resize_active_terminal(app: &mut AppState, size: PtySize) {
         if let Some(term) = ts.active_mut() {
             let _ = term.resize(size);
         }
+    }
+}
+
+fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
+    // Modal swallows mouse events in v1.1 — keep keyboard-only UX for inputs.
+    if app.ui.modal.is_some() {
+        return;
+    }
+    let (col, row) = (mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if rect_contains(app.layout.sidebar, col, row) {
+                app.ui.focus = crate::app::FocusZone::Sidebar;
+                route_sidebar_click(app, row);
+            } else if rect_contains(app.layout.main, col, row) {
+                app.ui.focus = crate::app::FocusZone::Main;
+            }
+        }
+        MouseEventKind::ScrollUp => {
+            if rect_contains(app.layout.main, col, row) {
+                if let Some(id) = app.ui.active_worktree {
+                    if let Some(ts) = app.terminals.get_mut(&id) {
+                        if ts.mode != crate::app::TerminalMode::Scrollback {
+                            ts.mode = crate::app::TerminalMode::Scrollback;
+                        }
+                        ts.scroll(3);
+                    }
+                }
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if rect_contains(app.layout.main, col, row) {
+                if let Some(id) = app.ui.active_worktree {
+                    if let Some(ts) = app.terminals.get_mut(&id) {
+                        ts.scroll(-3);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rect_contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
+    col >= rect.x
+        && col < rect.x + rect.width
+        && row >= rect.y
+        && row < rect.y + rect.height
+}
+
+fn route_sidebar_click(app: &mut AppState, row: u16) {
+    // Reconstruct the visible sidebar flat list (matches sidebar::render).
+    // 2 rows of header, then per-repo block.
+    let base_row = app.layout.sidebar.y;
+    if row < base_row.saturating_add(2) {
+        return;
+    }
+    let mut line = base_row + 2; // first content row
+    if app.repos.is_empty() {
+        return;
+    }
+    for (i, repo) in app.repos.iter().enumerate() {
+        // repo row
+        if line == row {
+            app.ui.cursor = Some(crate::app::SidebarCursor::Repo(i));
+            return;
+        }
+        line += 1;
+        let expanded = app.ui.is_expanded(&repo.name);
+        if expanded {
+            for (j, _wt) in repo.worktrees.iter().enumerate() {
+                if line == row {
+                    app.ui.cursor = Some(crate::app::SidebarCursor::Worktree {
+                        repo: i,
+                        worktree: j,
+                    });
+                    app.update(crate::app::AppMessage::Activate);
+                    return;
+                }
+                line += 1;
+            }
+        }
+        line += 1; // blank spacer row
     }
 }
 
@@ -681,12 +777,12 @@ fn print_paths(paths: &AppPaths) {
 
 fn init_terminal() -> Result<Tui> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     Ok(Terminal::new(CrosstermBackend::new(io::stdout()))?)
 }
 
 fn restore_terminal() -> Result<()> {
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
     disable_raw_mode()?;
     Ok(())
 }

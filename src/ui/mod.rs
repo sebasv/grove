@@ -14,9 +14,14 @@ use crate::app::{AppState, Modal};
 
 const SIDEBAR_WIDTH: u16 = 32;
 
-/// Render the whole frame and return the Rect of the main pane's interior
-/// (used by the caller to sync PTY size on resize).
-pub fn render(frame: &mut Frame, app: &AppState) -> Rect {
+pub struct RenderedLayout {
+    pub sidebar: Rect,
+    pub main_inner: Rect,
+}
+
+/// Render the whole frame and return layout rects (used by the caller to
+/// sync PTY size on resize and to route mouse clicks).
+pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(0)])
@@ -60,7 +65,10 @@ pub fn render(frame: &mut Frame, app: &AppState) -> Rect {
         }
     }
 
-    inner
+    RenderedLayout {
+        sidebar: chunks[0],
+        main_inner: inner,
+    }
 }
 
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

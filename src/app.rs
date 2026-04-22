@@ -21,7 +21,19 @@ pub struct AppState {
     pub main_views: HashMap<WorktreeId, MainView>,
     pub theme: crate::theme::Theme,
     pub theme_name: crate::theme::ThemeName,
+    pub layout: LayoutCache,
     pub should_quit: bool,
+}
+
+/// Cached rects from the most recent `ui::render` pass.  Used by mouse
+/// dispatch to figure out what was clicked.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LayoutCache {
+    pub sidebar: ratatui::layout::Rect,
+    pub main: ratatui::layout::Rect,
+    /// Reserved for click-to-switch-tab in a later patch.
+    #[allow(dead_code)]
+    pub tab_bar: Option<ratatui::layout::Rect>,
 }
 
 pub struct WorktreeTerminals {
@@ -322,6 +334,7 @@ impl AppState {
             main_views: HashMap::new(),
             theme: crate::theme::Theme::default(),
             theme_name: crate::theme::ThemeName::default(),
+            layout: LayoutCache::default(),
             should_quit: false,
         })
     }
@@ -1292,6 +1305,7 @@ impl AppState {
             main_views: HashMap::new(),
             theme: crate::theme::Theme::default(),
             theme_name: crate::theme::ThemeName::default(),
+            layout: LayoutCache::default(),
             should_quit: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
@@ -1309,6 +1323,7 @@ impl AppState {
             main_views: HashMap::new(),
             theme: crate::theme::Theme::default(),
             theme_name: crate::theme::ThemeName::default(),
+            layout: LayoutCache::default(),
             should_quit: false,
         }
     }
