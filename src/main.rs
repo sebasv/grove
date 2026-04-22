@@ -413,6 +413,17 @@ fn main_reserved_keys(key: KeyEvent) -> Option<AppMessage> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+    // Ctrl+h/l and Ctrl+←/→ switch terminal tabs.  Intercepted before PTY
+    // dispatch so Ctrl+H doesn't reach the shell as backspace and Ctrl+L
+    // doesn't clear the screen.
+    if ctrl {
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left => return Some(AppMessage::PrevTab),
+            KeyCode::Char('l') | KeyCode::Right => return Some(AppMessage::NextTab),
+            _ => {}
+        }
+    }
+
     // Ctrl+\ toggles scrollback; note that Ctrl+[ would collide with Esc.
     if ctrl && matches!(key.code, KeyCode::Char('\\')) {
         return Some(AppMessage::ToggleScrollback);

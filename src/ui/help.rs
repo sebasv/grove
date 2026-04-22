@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
         Line::styled("  Main (terminal)", bold),
         Line::from("    Ctrl+t            new tab"),
         Line::from("    Ctrl+w            close tab"),
-        Line::from("    Alt+h / Alt+l     previous / next tab"),
+        Line::from("    Ctrl+h / Ctrl+l   previous / next tab"),
         Line::from("    Ctrl+\\            toggle scrollback mode"),
         Line::from(""),
         Line::styled("  Diff (focus=Main)", bold),
