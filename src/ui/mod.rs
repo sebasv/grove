@@ -17,6 +17,7 @@ const SIDEBAR_WIDTH: u16 = 32;
 pub struct RenderedLayout {
     pub sidebar: Rect,
     pub main_inner: Rect,
+    pub tab_bar: Option<Rect>,
 }
 
 /// Render the whole frame and return layout rects (used by the caller to
@@ -28,7 +29,7 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
         .split(frame.area());
 
     sidebar::render(frame, chunks[0], app);
-    let inner = main_pane::render(frame, chunks[1], app);
+    let (inner, tab_bar) = main_pane::render(frame, chunks[1], app);
 
     if let Some(modal) = &app.ui.modal {
         match modal {
@@ -68,6 +69,7 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
     RenderedLayout {
         sidebar: chunks[0],
         main_inner: inner,
+        tab_bar,
     }
 }
 

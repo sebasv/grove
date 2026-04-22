@@ -31,8 +31,6 @@ pub struct AppState {
 pub struct LayoutCache {
     pub sidebar: ratatui::layout::Rect,
     pub main: ratatui::layout::Rect,
-    /// Reserved for click-to-switch-tab in a later patch.
-    #[allow(dead_code)]
     pub tab_bar: Option<ratatui::layout::Rect>,
 }
 
