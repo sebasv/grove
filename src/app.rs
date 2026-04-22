@@ -125,7 +125,6 @@ impl WorktreeTerminals {
     }
 
     pub fn scroll_home(&mut self) {
-        // Arbitrary large — vt100 clamps internally.
         self.scroll_offset = 10_000;
     }
 

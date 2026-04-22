@@ -100,7 +100,11 @@ fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals)
     let Ok(mut parser) = term.parser.lock() else {
         return;
     };
-    parser.set_scrollback(ts.scroll_offset);
+    // vt100's visible_rows computes `rows_len - scrollback_offset`, which
+    // underflows when the offset exceeds the screen height. Clamp here since
+    // vt100 only clamps to scrollback.len(), not to the safe upper bound.
+    let max_offset = parser.screen().size().0 as usize;
+    parser.set_scrollback(ts.scroll_offset.min(max_offset));
     frame.render_widget(PseudoTerminal::new(parser.screen()), area);
 }
 
