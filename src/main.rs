@@ -239,7 +239,7 @@ fn handle_paste(text: String, app: &mut AppState) {
     if app.ui.focus != FocusZone::Main {
         return;
     }
-    let Some(id) = app.ui.active_worktree else {
+    let Some(id) = app.active_worktree_id() else {
         return;
     };
     let view = app.main_views.get(&id).copied().unwrap_or_default();

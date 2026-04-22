@@ -877,13 +877,7 @@ impl AppState {
             .collect();
         self.main_views = new_views;
 
-        self.ui.active_worktree = self.ui.active_worktree.and_then(|(rr, ww)| {
-            if rr == r {
-                old_to_new.get(&ww).map(|&nw| (rr, nw))
-            } else {
-                Some((rr, ww))
-            }
-        });
+        // ActiveWorktreeId is keyed by repo+branch, not by index, so no remap needed.
     }
 
     fn try_remove_worktree(&mut self, id: WorktreeId) -> Result<()> {
@@ -1934,7 +1928,10 @@ mod tests {
         app.main_views.insert((r, 0), MainView::Terminal);
         app.main_views.insert((r, 1), MainView::Diff);
         app.main_views.insert((r, 2), MainView::Terminal);
-        app.ui.active_worktree = Some((r, 1)); // feat/sidebar
+        app.ui.active_worktree = Some(ActiveWorktreeId {
+            repo: "grove".to_string(),
+            branch: "feat/sidebar".to_string(),
+        });
 
         // Simulate a re-list that swaps indices 1 and 2 (e.g. a new worktree
         // was inserted before feat/sidebar alphabetically, pushing it back).
@@ -1952,8 +1949,14 @@ mod tests {
         assert_eq!(app.main_views.get(&(r, 2)), Some(&MainView::Diff));
         // fix/deps (was 2) is now at 1.
         assert_eq!(app.main_views.get(&(r, 1)), Some(&MainView::Terminal));
-        // active_worktree followed feat/sidebar from 1 → 2.
-        assert_eq!(app.ui.active_worktree, Some((r, 2)));
+        // active_worktree is identity-based (repo+branch) so it stays unchanged.
+        assert_eq!(
+            app.ui.active_worktree,
+            Some(ActiveWorktreeId {
+                repo: "grove".to_string(),
+                branch: "feat/sidebar".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -1962,13 +1965,22 @@ mod tests {
 
         app.main_views.insert((0, 0), MainView::Diff);
         app.main_views.insert((1, 0), MainView::Diff);
-        app.ui.active_worktree = Some((1, 0));
+        app.ui.active_worktree = Some(ActiveWorktreeId {
+            repo: "dotfiles".to_string(),
+            branch: "main".to_string(),
+        });
 
         // Remap repo 0 only; repo 1 entries must be untouched.
         let new_list = vec![app.repos[0].worktrees[0].clone()];
         app.remap_worktree_state(0, &new_list);
 
         assert_eq!(app.main_views.get(&(1, 0)), Some(&MainView::Diff));
-        assert_eq!(app.ui.active_worktree, Some((1, 0)));
+        assert_eq!(
+            app.ui.active_worktree,
+            Some(ActiveWorktreeId {
+                repo: "dotfiles".to_string(),
+                branch: "main".to_string(),
+            })
+        );
     }
 }
