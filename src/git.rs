@@ -1,9 +1,173 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use git2::{BranchType, Repository, Status, StatusOptions};
+use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
 use crate::model::{Worktree, WorktreeStatus};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffFile {
+    pub path: PathBuf,
+    pub staged: bool,
+    pub adds: u32,
+    pub dels: u32,
+    pub kind: DeltaKind,
+    pub hunks: Vec<DiffHunk>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeltaKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffHunk {
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLineKind {
+    Context,
+    Add,
+    Del,
+}
+
+pub fn compute_local_diff(worktree_path: &Path) -> Result<Vec<DiffFile>> {
+    let repo = Repository::open(worktree_path)
+        .with_context(|| format!("opening {}", worktree_path.display()))?;
+
+    let mut opts = DiffOptions::new();
+    opts.context_lines(3);
+
+    let mut files = Vec::new();
+
+    let unstaged = repo
+        .diff_index_to_workdir(None, Some(&mut opts))
+        .context("diff index to workdir")?;
+    collect_diff(&unstaged, false, &mut files);
+
+    let head_tree = match repo.head().and_then(|h| h.peel_to_tree()) {
+        Ok(t) => Some(t),
+        Err(_) => None,
+    };
+    if let Some(tree) = head_tree {
+        let mut opts = DiffOptions::new();
+        opts.context_lines(3);
+        let staged = repo
+            .diff_tree_to_index(Some(&tree), None, Some(&mut opts))
+            .context("diff tree to index")?;
+        collect_diff(&staged, true, &mut files);
+    }
+
+    Ok(files)
+}
+
+fn collect_diff(diff: &git2::Diff<'_>, staged: bool, out: &mut Vec<DiffFile>) {
+    use std::cell::RefCell;
+
+    let scratch: RefCell<Vec<DiffFile>> = RefCell::new(Vec::new());
+    let _ = diff.foreach(
+        &mut |delta, _progress| {
+            let path = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            let kind = match delta.status() {
+                git2::Delta::Added => DeltaKind::Added,
+                git2::Delta::Modified => DeltaKind::Modified,
+                git2::Delta::Deleted => DeltaKind::Deleted,
+                git2::Delta::Renamed => DeltaKind::Renamed,
+                _ => DeltaKind::Other,
+            };
+            scratch.borrow_mut().push(DiffFile {
+                path,
+                staged,
+                adds: 0,
+                dels: 0,
+                kind,
+                hunks: Vec::new(),
+            });
+            true
+        },
+        None,
+        Some(&mut |_delta, hunk| {
+            if let Some(file) = scratch.borrow_mut().last_mut() {
+                let header =
+                    std::str::from_utf8(hunk.header()).unwrap_or("").to_string();
+                file.hunks.push(DiffHunk {
+                    header,
+                    lines: Vec::new(),
+                });
+            }
+            true
+        }),
+        Some(&mut |_delta, _hunk, line| {
+            let kind = match line.origin() {
+                '+' => DiffLineKind::Add,
+                '-' => DiffLineKind::Del,
+                _ => DiffLineKind::Context,
+            };
+            if let Some(file) = scratch.borrow_mut().last_mut() {
+                if let Some(hunk) = file.hunks.last_mut() {
+                    let content =
+                        std::str::from_utf8(line.content()).unwrap_or("").to_string();
+                    hunk.lines.push(DiffLine {
+                        kind,
+                        content: content.trim_end_matches('\n').to_string(),
+                    });
+                    match kind {
+                        DiffLineKind::Add => file.adds += 1,
+                        DiffLineKind::Del => file.dels += 1,
+                        DiffLineKind::Context => {}
+                    }
+                }
+            }
+            true
+        }),
+    );
+    out.extend(scratch.into_inner());
+}
+
+pub fn stage_path(worktree_path: &Path, file_path: &Path) -> Result<()> {
+    run_git_cmd(worktree_path, &["add", "--", &file_path.display().to_string()])
+}
+
+pub fn unstage_path(worktree_path: &Path, file_path: &Path) -> Result<()> {
+    run_git_cmd(
+        worktree_path,
+        &["restore", "--staged", "--", &file_path.display().to_string()],
+    )
+}
+
+fn run_git_cmd(cwd: &Path, args: &[&str]) -> Result<()> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .with_context(|| format!("running `git {}`", args.join(" ")))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
 
 pub fn is_git_repo(path: &Path) -> bool {
     Repository::open(path).is_ok()
@@ -143,7 +307,7 @@ mod tests {
         dir
     }
 
-    fn run_git(path: &Path, args: &[&str]) {
+    fn run_git_test(path: &Path, args: &[&str]) {
         let status = Command::new("git")
             .arg("-C")
             .arg(path)
@@ -154,10 +318,10 @@ mod tests {
     }
 
     fn init_repo(dir: &Path) {
-        run_git(dir, &["init", "--quiet", "--initial-branch=main"]);
+        run_git_test(dir, &["init", "--quiet", "--initial-branch=main"]);
         std::fs::write(dir.join("README.md"), "hello").unwrap();
-        run_git(dir, &["add", "."]);
-        run_git(
+        run_git_test(dir, &["add", "."]);
+        run_git_test(
             dir,
             &[
                 "-c",
@@ -203,7 +367,7 @@ mod tests {
             "{}-linked",
             dir.file_name().unwrap().to_string_lossy()
         ));
-        run_git(
+        run_git_test(
             &dir,
             &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
         );
@@ -227,7 +391,7 @@ mod tests {
         let dir = temp_dir();
         init_repo(&dir);
         std::fs::write(dir.join("new.txt"), "x").unwrap();
-        run_git(&dir, &["add", "new.txt"]);
+        run_git_test(&dir, &["add", "new.txt"]);
         let s = compute_status(&dir).unwrap();
         assert_eq!(s.staged, 1);
         assert_eq!(s.modified, 0);
@@ -262,13 +426,33 @@ mod tests {
     }
 
     #[test]
+    fn compute_local_diff_lists_unstaged_and_staged_changes() {
+        let dir = temp_dir();
+        init_repo(&dir);
+        // Modify the file to produce an unstaged edit.
+        std::fs::write(dir.join("README.md"), "changed").unwrap();
+        // Add a new file and stage it.
+        std::fs::write(dir.join("new.txt"), "x").unwrap();
+        run_git_test(&dir, &["add", "new.txt"]);
+
+        let files = compute_local_diff(&dir).unwrap();
+        let unstaged: Vec<_> = files.iter().filter(|f| !f.staged).collect();
+        let staged: Vec<_> = files.iter().filter(|f| f.staged).collect();
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].path.to_str(), Some("README.md"));
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].path.to_str(), Some("new.txt"));
+        assert!(staged[0].adds > 0);
+    }
+
+    #[test]
     fn ahead_behind_counts_diverged_commits() {
         // Create "remote" bare repo and "local" clone; commit on local; verify ahead=1.
         let remote = temp_dir();
-        run_git(&remote, &["init", "--bare", "--quiet", "--initial-branch=main"]);
+        run_git_test(&remote, &["init", "--bare", "--quiet", "--initial-branch=main"]);
 
         let local = temp_dir();
-        run_git(
+        run_git_test(
             &local,
             &[
                 "clone",
@@ -279,8 +463,8 @@ mod tests {
         );
         // After clone, `local` has been re-init'd with origin set; it has no commits yet.
         std::fs::write(local.join("x.txt"), "x").unwrap();
-        run_git(&local, &["add", "."]);
-        run_git(
+        run_git_test(&local, &["add", "."]);
+        run_git_test(
             &local,
             &[
                 "-c",
@@ -293,7 +477,7 @@ mod tests {
                 "--quiet",
             ],
         );
-        run_git(&local, &["push", "--quiet", "-u", "origin", "main"]);
+        run_git_test(&local, &["push", "--quiet", "-u", "origin", "main"]);
         // Now ahead=behind=0.
         let s = compute_status(&local).unwrap();
         assert_eq!(s.ahead, 0);
@@ -301,8 +485,8 @@ mod tests {
 
         // Commit locally without pushing → ahead=1.
         std::fs::write(local.join("y.txt"), "y").unwrap();
-        run_git(&local, &["add", "."]);
-        run_git(
+        run_git_test(&local, &["add", "."]);
+        run_git_test(
             &local,
             &[
                 "-c",

@@ -138,9 +138,22 @@ async fn run(
             }
             Event::RepoDirty(repo_idx) => {
                 refresh_repo_statuses(repo_idx, app, &tx);
+                // Re-trigger diff refresh for the active worktree if it's in
+                // this repo and currently viewing the Diff pane.
+                if let Some(id) = app.ui.active_worktree {
+                    if id.0 == repo_idx
+                        && app.main_views.get(&id).copied().unwrap_or_default()
+                            == crate::app::MainView::Diff
+                    {
+                        refresh_diff_for_active(app, &tx);
+                    }
+                }
             }
             Event::StatusReady(id, status) => {
                 app.set_worktree_status(id, status);
+            }
+            Event::DiffReady(id, files) => {
+                app.set_diff(id, files);
             }
             Event::TerminalOutput => {
                 // Parser advanced; next draw picks it up.
@@ -185,8 +198,13 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
             let is_activate = matches!(msg, AppMessage::Activate);
             let is_refresh = matches!(msg, AppMessage::RefreshAll);
             let is_new_terminal = matches!(msg, AppMessage::NewTerminal);
+            let is_toggle_diff = matches!(msg, AppMessage::ToggleDiffView);
+            let is_stage = matches!(msg, AppMessage::StageFocused);
+            let is_unstage = matches!(msg, AppMessage::UnstageFocused);
             if is_refresh {
                 refresh_all_statuses(app, tx);
+            } else if is_stage || is_unstage {
+                run_stage(app, tx, is_stage);
             } else {
                 app.update(msg);
             }
@@ -197,6 +215,9 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
                 if let Some(id) = app.ui.active_worktree {
                     spawn_terminal_for(id, app, tx);
                 }
+            }
+            if is_toggle_diff {
+                refresh_diff_for_active(app, tx);
             }
         }
         InputAction::PtyBytes(bytes) => {
@@ -310,6 +331,16 @@ fn main_focus_action(key: KeyEvent, app: &AppState) -> InputAction {
     let Some(id) = app.ui.active_worktree else {
         return InputAction::Noop;
     };
+
+    let view = app
+        .main_views
+        .get(&id)
+        .copied()
+        .unwrap_or_default();
+    if view == crate::app::MainView::Diff {
+        return InputAction::Message(diff_keys(key));
+    }
+
     let Some(ts) = app.terminals.get(&id) else {
         return InputAction::Noop;
     };
@@ -322,6 +353,20 @@ fn main_focus_action(key: KeyEvent, app: &AppState) -> InputAction {
             Some(bytes) => InputAction::PtyBytes(bytes),
             None => InputAction::Noop,
         },
+    }
+}
+
+fn diff_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => AppMessage::DiffCursorDown,
+        KeyCode::Char('k') | KeyCode::Up => AppMessage::DiffCursorUp,
+        KeyCode::Char('J') => AppMessage::DiffContentDown,
+        KeyCode::Char('K') => AppMessage::DiffContentUp,
+        KeyCode::Tab => AppMessage::DiffToggleFocus,
+        KeyCode::Char('s') => AppMessage::StageFocused,
+        KeyCode::Char('u') => AppMessage::UnstageFocused,
+        KeyCode::Esc => AppMessage::ToggleDiffView,
+        _ => AppMessage::NoOp,
     }
 }
 
@@ -347,6 +392,7 @@ fn main_reserved_keys(key: KeyEvent) -> Option<AppMessage> {
             KeyCode::Char('w') => Some(AppMessage::CloseTerminal),
             KeyCode::Char('h') | KeyCode::Left => Some(AppMessage::PrevTab),
             KeyCode::Char('l') | KeyCode::Right => Some(AppMessage::NextTab),
+            KeyCode::Char('d') => Some(AppMessage::ToggleDiffView),
             _ => None,
         };
     }
@@ -360,6 +406,8 @@ fn main_reserved_keys(key: KeyEvent) -> Option<AppMessage> {
             KeyCode::Char('∑') => Some(AppMessage::CloseTerminal),
             KeyCode::Char('˙') => Some(AppMessage::PrevTab),
             KeyCode::Char('¬') => Some(AppMessage::NextTab),
+            // Option+d on macOS sends '∂' (U+2202) when Option is not passed as Meta.
+            KeyCode::Char('∂') => Some(AppMessage::ToggleDiffView),
             _ => None,
         };
     }
@@ -397,6 +445,42 @@ fn refresh_all_statuses(app: &AppState, tx: &EventSender) {
         for (w, wt) in repo.worktrees.iter().enumerate() {
             async_evt::spawn_status_refresh((r, w), wt.path.clone(), tx.clone());
         }
+    }
+}
+
+fn refresh_diff_for_active(app: &AppState, tx: &EventSender) {
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    let Some(wt) = app
+        .repos
+        .get(id.0)
+        .and_then(|repo| repo.worktrees.get(id.1))
+    else {
+        return;
+    };
+    async_evt::spawn_diff_refresh(id, wt.path.clone(), tx.clone());
+}
+
+fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
+    let Some(id) = app.ui.active_worktree else {
+        return;
+    };
+    let Some((worktree_path, file_path, is_staged)) = app.diffs.get(&id).and_then(|d| {
+        let file = d.files.get(d.cursor)?;
+        let wt = app.repos.get(id.0)?.worktrees.get(id.1)?;
+        Some((wt.path.clone(), file.path.clone(), file.staged))
+    }) else {
+        return;
+    };
+    // stage == true: only act when the focused file is unstaged, and vice versa.
+    let result = match (staging, is_staged) {
+        (true, false) => git::stage_path(&worktree_path, &file_path),
+        (false, true) => git::unstage_path(&worktree_path, &file_path),
+        _ => return,
+    };
+    if result.is_ok() {
+        async_evt::spawn_diff_refresh(id, worktree_path, tx.clone());
     }
 }
 

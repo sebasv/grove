@@ -5,7 +5,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{AppState, FocusZone, TerminalMode, WorktreeTerminals};
+use crate::app::{AppState, FocusZone, MainView, TerminalMode, WorktreeTerminals};
+use crate::ui::diff;
 
 const DIVIDER: &str = "────────────────────────────────────────";
 
@@ -26,18 +27,33 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) -> Rect {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Try to render a terminal first. If none, fall back to the informational
-    // placeholder content.
     if let Some(id) = app.ui.active_worktree {
-        if let Some(ts) = app.terminals.get(&id) {
-            if !ts.list.is_empty() {
-                let layout = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Min(0)])
-                    .split(inner);
-                render_tab_bar(frame, layout[0], ts);
-                render_active_terminal(frame, layout[1], ts);
-                return layout[1];
+        let view = app.main_views.get(&id).copied().unwrap_or_default();
+        match view {
+            MainView::Diff => {
+                if let Some(state) = app.diffs.get(&id) {
+                    diff::render(frame, inner, state);
+                    return inner;
+                }
+                frame.render_widget(
+                    Paragraph::new("  loading diff…")
+                        .style(Style::default().add_modifier(Modifier::DIM)),
+                    inner,
+                );
+                return inner;
+            }
+            MainView::Terminal => {
+                if let Some(ts) = app.terminals.get(&id) {
+                    if !ts.list.is_empty() {
+                        let layout = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([Constraint::Length(1), Constraint::Min(0)])
+                            .split(inner);
+                        render_tab_bar(frame, layout[0], ts);
+                        render_active_terminal(frame, layout[1], ts);
+                        return layout[1];
+                    }
+                }
             }
         }
     }

@@ -7,7 +7,7 @@ use ratatui::Frame;
 use crate::ui::centered_rect;
 
 pub fn render(frame: &mut Frame, area: Rect) {
-    let modal = centered_rect(56, 26, area);
+    let modal = centered_rect(60, 32, area);
     frame.render_widget(Clear, modal);
 
     let block = Block::default().borders(Borders::ALL).title(" Help ");
@@ -28,6 +28,13 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("    Ctrl+w            close tab"),
         Line::from("    Alt+h / Alt+l     previous / next tab"),
         Line::from("    Ctrl+\\            toggle scrollback mode"),
+        Line::from(""),
+        Line::styled("  Diff (focus=Main)", bold),
+        Line::from("    Alt+d             toggle diff view"),
+        Line::from("    j / k             prev / next file"),
+        Line::from("    Tab               list ↔ content"),
+        Line::from("    J / K             scroll content"),
+        Line::from("    s / u             stage / unstage"),
         Line::from(""),
         Line::styled("  Global", bold),
         Line::from("    Ctrl+Space        cycle focus (sidebar ↔ main)"),

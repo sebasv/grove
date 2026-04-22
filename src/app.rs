@@ -17,6 +17,8 @@ pub struct AppState {
     pub repos: Vec<Repo>,
     pub ui: UiState,
     pub terminals: HashMap<WorktreeId, WorktreeTerminals>,
+    pub diffs: HashMap<WorktreeId, DiffState>,
+    pub main_views: HashMap<WorktreeId, MainView>,
     pub should_quit: bool,
 }
 
@@ -136,6 +138,28 @@ pub enum FocusZone {
     Main,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MainView {
+    #[default]
+    Terminal,
+    Diff,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiffState {
+    pub files: Vec<crate::git::DiffFile>,
+    pub cursor: usize,
+    pub scroll: u16,
+    pub diff_focus: DiffFocus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DiffFocus {
+    #[default]
+    List,
+    Content,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarCursor {
     Repo(usize),
@@ -192,6 +216,14 @@ pub enum AppMessage {
     ScrollPageDown,
     ScrollTop,
     ScrollBottom,
+    ToggleDiffView,
+    DiffCursorUp,
+    DiffCursorDown,
+    DiffToggleFocus,
+    DiffContentUp,
+    DiffContentDown,
+    StageFocused,
+    UnstageFocused,
     Quit,
     NoOp,
 }
@@ -220,6 +252,8 @@ impl AppState {
                 ..UiState::default()
             },
             terminals: HashMap::new(),
+            diffs: HashMap::new(),
+            main_views: HashMap::new(),
             should_quit: false,
         })
     }
@@ -259,9 +293,68 @@ impl AppState {
             AppMessage::ScrollPageDown => self.with_active_terminals(|t| t.scroll(-20)),
             AppMessage::ScrollTop => self.with_active_terminals(|t| t.scroll_home()),
             AppMessage::ScrollBottom => self.with_active_terminals(|t| t.scroll_end()),
+            AppMessage::ToggleDiffView => self.toggle_diff_view(),
+            AppMessage::DiffCursorUp => self.move_diff_cursor(-1),
+            AppMessage::DiffCursorDown => self.move_diff_cursor(1),
+            AppMessage::DiffToggleFocus => self.toggle_diff_focus(),
+            AppMessage::DiffContentUp => self.scroll_diff(-1),
+            AppMessage::DiffContentDown => self.scroll_diff(1),
+            // Stage/UnstageFocused need side effects (subprocess + refresh); handled outside update.
+            AppMessage::StageFocused | AppMessage::UnstageFocused => {}
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
         }
+    }
+
+    fn toggle_diff_view(&mut self) {
+        if let Some(id) = self.ui.active_worktree {
+            let next = match self.main_views.get(&id).copied().unwrap_or_default() {
+                MainView::Terminal => MainView::Diff,
+                MainView::Diff => MainView::Terminal,
+            };
+            self.main_views.insert(id, next);
+        }
+    }
+
+    fn move_diff_cursor(&mut self, delta: i32) {
+        if let Some(id) = self.ui.active_worktree {
+            if let Some(d) = self.diffs.get_mut(&id) {
+                if d.files.is_empty() {
+                    return;
+                }
+                let new = d.cursor as i32 + delta;
+                let new = new.clamp(0, d.files.len() as i32 - 1) as usize;
+                d.cursor = new;
+                d.scroll = 0;
+            }
+        }
+    }
+
+    fn toggle_diff_focus(&mut self) {
+        if let Some(id) = self.ui.active_worktree {
+            if let Some(d) = self.diffs.get_mut(&id) {
+                d.diff_focus = match d.diff_focus {
+                    DiffFocus::List => DiffFocus::Content,
+                    DiffFocus::Content => DiffFocus::List,
+                };
+            }
+        }
+    }
+
+    fn scroll_diff(&mut self, delta: i32) {
+        if let Some(id) = self.ui.active_worktree {
+            if let Some(d) = self.diffs.get_mut(&id) {
+                let new = d.scroll as i32 + delta;
+                d.scroll = new.max(0) as u16;
+            }
+        }
+    }
+
+    pub fn set_diff(&mut self, id: WorktreeId, files: Vec<crate::git::DiffFile>) {
+        let d = self.diffs.entry(id).or_default();
+        let preserve_cursor = d.cursor.min(files.len().saturating_sub(1));
+        d.files = files;
+        d.cursor = preserve_cursor;
     }
 
     fn with_active_terminals<F: FnOnce(&mut WorktreeTerminals)>(&mut self, f: F) {
@@ -687,6 +780,8 @@ impl AppState {
             ],
             ui: UiState::default(),
             terminals: HashMap::new(),
+            diffs: HashMap::new(),
+            main_views: HashMap::new(),
             should_quit: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
@@ -700,6 +795,8 @@ impl AppState {
             repos: Vec::new(),
             ui: UiState::default(),
             terminals: HashMap::new(),
+            diffs: HashMap::new(),
+            main_views: HashMap::new(),
             should_quit: false,
         }
     }
