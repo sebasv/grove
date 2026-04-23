@@ -103,10 +103,7 @@ fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals)
     let Ok(mut parser) = term.parser.lock() else {
         return;
     };
-    let max_offset = parser.screen().size().0 as usize;
-    parser
-        .screen_mut()
-        .set_scrollback(ts.scroll_offset.min(max_offset));
+    parser.screen_mut().set_scrollback(ts.scroll_offset);
     frame.render_widget(PseudoTerminal::new(parser.screen()), area);
 }
 
