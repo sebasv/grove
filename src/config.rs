@@ -3,21 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const TEMPLATE: &str = r#"# grove config
-# Add one [[repos]] block per git repository you want grove to manage.
-# Worktrees inside each repo are discovered automatically.
-
-[general]
-default_base_branch = "main"
-# worktree_root = "~/.grove"   # optional; omit to place worktrees next to the repo
-
-# [[repos]]
-# name = "myproject"
-# path = "/path/to/myproject"
-# base_branch = "main"           # optional; overrides general.default_base_branch
-# worktree_root = "~/worktrees"  # optional; overrides general.worktree_root
-"#;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -97,22 +82,6 @@ impl Config {
         Ok(())
     }
 
-    pub fn write_template(path: &Path) -> Result<()> {
-        if path.exists() {
-            anyhow::bail!(
-                "refusing to overwrite existing config at {}",
-                path.display()
-            );
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        std::fs::write(path, TEMPLATE)
-            .with_context(|| format!("writing template to {}", path.display()))?;
-        Ok(())
-    }
-
     pub fn has_repo_named(&self, name: &str) -> bool {
         self.repos.iter().any(|r| r.name == name)
     }
@@ -160,12 +129,5 @@ mod tests {
         let parsed: Config = toml::from_str(minimal).unwrap();
         assert_eq!(parsed.general.default_base_branch, "main");
         assert_eq!(parsed.repos.len(), 1);
-    }
-
-    #[test]
-    fn template_parses_as_valid_config() {
-        let parsed: Config = toml::from_str(TEMPLATE).unwrap();
-        assert!(parsed.repos.is_empty());
-        assert_eq!(parsed.general.default_base_branch, "main");
     }
 }

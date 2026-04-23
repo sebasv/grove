@@ -51,10 +51,6 @@ struct Cli {
     /// Print resolved config, state and log paths, then exit
     #[arg(long)]
     print_paths: bool,
-
-    /// Create an empty config file at the default location
-    #[arg(long)]
-    init: bool,
 }
 
 fn main() -> ExitCode {
@@ -87,13 +83,6 @@ async fn run_cli() -> Result<ExitCode> {
 
     if cli.print_paths {
         print_paths(&paths);
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    if cli.init {
-        Config::write_template(&config_path)?;
-        println!("Created config at {}", config_path.display());
-        println!("Edit it to add your repositories, then run `grove`.");
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -764,6 +753,12 @@ fn refresh_repo_statuses(repo_idx: usize, app: &AppState, tx: &EventSender) {
 }
 
 fn default_keys(key: KeyEvent) -> AppMessage {
+    // Ctrl+C from the sidebar quits; from the main pane (terminal insert mode)
+    // it reaches the PTY as SIGINT for the focused shell process, which is the
+    // behaviour users expect there.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return AppMessage::Quit;
+    }
     match key.code {
         KeyCode::Char('q') => AppMessage::Quit,
         KeyCode::Char('?') => AppMessage::ToggleHelp,
