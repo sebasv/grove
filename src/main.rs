@@ -155,47 +155,65 @@ async fn run(
                 continue;
             }
         };
-        match event {
-            Event::Input(key) => {
-                handle_input(key, app, &tx);
-                if app.should_quit {
-                    break;
-                }
-            }
-            Event::Mouse(mouse) => {
-                handle_mouse(mouse, app, &tx);
-            }
-            Event::Paste(text) => {
-                handle_paste(text, app);
-            }
-            Event::RepoDirty(repo_idx) => {
-                refresh_repo_statuses(repo_idx, app, &tx);
-                // Re-trigger diff refresh for the active worktree if it's in
-                // this repo and currently viewing the Diff pane.
-                if let Some(id) = app.active_worktree_id() {
-                    if id.0 == repo_idx
-                        && app.main_views.get(&id).copied().unwrap_or_default()
-                            == crate::app::MainView::Diff
-                    {
-                        refresh_diff_for_active(app, &tx);
-                    }
-                }
-            }
-            Event::StatusReady(id, status) => {
-                app.set_worktree_status(id, status);
-            }
-            Event::DiffReady(id, files) => {
-                app.set_diff(id, files);
-            }
-            Event::PrStatusReady(id, pr) => {
-                app.set_worktree_pr(id, pr);
-            }
-            Event::TerminalOutput => {
-                // Parser advanced; next draw picks it up.
+        if !dispatch_event(event, app, &tx) {
+            break;
+        }
+        // Drain any other events already queued before re-rendering, so bursts
+        // (e.g. macOS inertial-scroll emitting 100+ events per gesture, or a
+        // shell spewing PTY output) collapse into one frame instead of one
+        // frame per event.
+        while let Ok(ev) = rx.try_recv() {
+            if !dispatch_event(ev, app, &tx) {
+                return Ok(());
             }
         }
     }
     Ok(())
+}
+
+/// Apply a single event to `app`. Returns `false` to signal the run loop to
+/// exit (the user requested quit).
+fn dispatch_event(event: Event, app: &mut AppState, tx: &EventSender) -> bool {
+    match event {
+        Event::Input(key) => {
+            handle_input(key, app, tx);
+            if app.should_quit {
+                return false;
+            }
+        }
+        Event::Mouse(mouse) => {
+            handle_mouse(mouse, app, tx);
+        }
+        Event::Paste(text) => {
+            handle_paste(text, app);
+        }
+        Event::RepoDirty(repo_idx) => {
+            refresh_repo_statuses(repo_idx, app, tx);
+            // Re-trigger diff refresh for the active worktree if it's in
+            // this repo and currently viewing the Diff pane.
+            if let Some(id) = app.active_worktree_id() {
+                if id.0 == repo_idx
+                    && app.main_views.get(&id).copied().unwrap_or_default()
+                        == crate::app::MainView::Diff
+                {
+                    refresh_diff_for_active(app, tx);
+                }
+            }
+        }
+        Event::StatusReady(id, status) => {
+            app.set_worktree_status(id, status);
+        }
+        Event::DiffReady(id, files) => {
+            app.set_diff(id, files);
+        }
+        Event::PrStatusReady(id, pr) => {
+            app.set_worktree_pr(id, pr);
+        }
+        Event::TerminalOutput => {
+            // Parser advanced; next draw picks it up.
+        }
+    }
+    true
 }
 
 fn draw(tui: &mut Tui, app: &mut AppState) -> Result<PtySize> {
