@@ -75,7 +75,11 @@ impl Terminal {
             return Ok(());
         }
         self.master.resize(size).context("resizing pty")?;
-        self.parser.lock().unwrap().set_size(size.rows, size.cols);
+        self.parser
+            .lock()
+            .unwrap()
+            .screen_mut()
+            .set_size(size.rows, size.cols);
         self.last_size = size;
         Ok(())
     }
