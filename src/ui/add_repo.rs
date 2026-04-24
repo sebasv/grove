@@ -5,9 +5,10 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 
 use crate::app::{AddRepoModal, NewWorktreeModal, NewWorktreeMode};
+use crate::theme::Theme;
 use crate::ui::{centered_rect, text_input};
 
-pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal) {
+pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal, theme: &Theme) {
     let n = modal.completions.len().min(10);
     let height = if n == 0 { 11u16 } else { 11 + n as u16 + 1 };
     let modal_area = centered_rect(62, height, area);
@@ -42,7 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal) {
         width: rows[2].width.saturating_sub(2),
         ..rows[2]
     };
-    text_input::render(frame, input_area, &modal.input);
+    text_input::render(frame, input_area, &modal.input, theme.input_bg_focused);
 
     let base_row = if n > 0 {
         // rows[3] = separator line, rows[4] = completions list
@@ -97,10 +98,11 @@ pub fn render_new_worktree(
     area: Rect,
     modal: &NewWorktreeModal,
     repo_name: &str,
+    theme: &Theme,
 ) {
     match modal.mode {
         NewWorktreeMode::PickBranch => render_pick_branch(frame, area, modal, repo_name),
-        NewWorktreeMode::NewBranch => render_new_branch(frame, area, modal, repo_name),
+        NewWorktreeMode::NewBranch => render_new_branch(frame, area, modal, repo_name, theme),
     }
 }
 
@@ -180,7 +182,13 @@ fn render_pick_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, r
     frame.render_widget(Paragraph::new(hint), rows[5]);
 }
 
-fn render_new_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, repo_name: &str) {
+fn render_new_branch(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &NewWorktreeModal,
+    repo_name: &str,
+    theme: &Theme,
+) {
     let modal_area = centered_rect(62, 11, area);
     frame.render_widget(Clear, modal_area);
     let title = format!(" New worktree in {repo_name} ");
@@ -206,7 +214,7 @@ fn render_new_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, re
         width: rows[2].width.saturating_sub(2),
         ..rows[2]
     };
-    text_input::render(frame, input_area, &modal.input);
+    text_input::render(frame, input_area, &modal.input, theme.input_bg_focused);
 
     if let Some(err) = &modal.error {
         let line = Line::styled(format!("  ! {err}"), Style::default().fg(Color::Red));

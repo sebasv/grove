@@ -11,6 +11,12 @@ pub struct Theme {
     pub success: Color,
     pub warn: Color,
     pub danger: Color,
+    /// Background for a focused text input — lets the user see where
+    /// keystrokes will land without reading hint text.
+    pub input_bg_focused: Color,
+    /// Background for an unfocused text input (e.g. the NewWorktree
+    /// modal's input row while the branch list is active).
+    pub input_bg: Color,
 }
 
 impl Default for Theme {
@@ -23,6 +29,8 @@ impl Default for Theme {
             success: Color::Green,
             warn: Color::Yellow,
             danger: Color::Red,
+            input_bg_focused: Color::Rgb(40, 44, 52),
+            input_bg: Color::Rgb(28, 30, 36),
         }
     }
 }
@@ -55,6 +63,8 @@ pub fn resolve(name: ThemeName) -> Theme {
             success: Color::Rgb(158, 206, 106),
             warn: Color::Rgb(224, 175, 104),
             danger: Color::Rgb(247, 118, 142),
+            input_bg_focused: Color::Rgb(36, 40, 59),
+            input_bg: Color::Rgb(26, 29, 43),
         },
         ThemeName::Gruvbox => Theme {
             accent: Color::Rgb(250, 189, 47),
@@ -62,6 +72,8 @@ pub fn resolve(name: ThemeName) -> Theme {
             success: Color::Rgb(184, 187, 38),
             warn: Color::Rgb(254, 128, 25),
             danger: Color::Rgb(251, 73, 52),
+            input_bg_focused: Color::Rgb(60, 56, 54),
+            input_bg: Color::Rgb(40, 40, 40),
         },
     }
 }
