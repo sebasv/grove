@@ -52,7 +52,7 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
         Line::from("    Ctrl+Space        toggle focus (sidebar ↔ main)"),
         Line::from("    F2                cycle color scheme"),
         Line::from("    ?                 toggle this help  (j/k to scroll)"),
-        Line::from("    q                 quit (sidebar focus only)"),
+        Line::from("    q / Ctrl+C        quit (sidebar focus only)"),
         Line::from(""),
         Line::styled("  PR badges", bold),
         Line::from("    set GITHUB_TOKEN, GH_TOKEN, or run 'gh auth login'"),
