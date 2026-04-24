@@ -25,6 +25,15 @@ pub struct AppState {
     pub layout: LayoutCache,
     pub should_quit: bool,
     pub activity: ActivityState,
+    /// True when `github::build_client` produced a client — i.e. grove
+    /// could see a `GITHUB_TOKEN`/`GH_TOKEN` env var or a logged-in
+    /// `gh` CLI.  Set by `main.rs` right after token discovery.
+    pub github_authenticated: bool,
+    /// True when at least one configured repo has a recognised GitHub
+    /// `origin` remote.  The sidebar shows an "auth" warning iff this
+    /// is true and `github_authenticated` is false.  Cached to avoid
+    /// shelling out to `git remote` on every render.
+    pub has_github_repo: bool,
 }
 
 /// Cached rects from the most recent `ui::render` pass.  Used by mouse
@@ -367,6 +376,7 @@ impl AppState {
         };
         let mut activity = ActivityState::default();
         activity.resize_repos(repos.len());
+        let has_github_repo = any_github_remote(&repos);
         Ok(Self {
             config,
             config_path,
@@ -383,6 +393,8 @@ impl AppState {
             layout: LayoutCache::default(),
             should_quit: false,
             activity,
+            github_authenticated: false,
+            has_github_repo,
         })
     }
 
@@ -433,6 +445,13 @@ impl AppState {
             AppMessage::CycleTheme => {
                 self.theme_name = self.theme_name.next();
                 self.theme = crate::theme::resolve(self.theme_name);
+                // Persist immediately so the choice survives restarts.
+                // Best-effort: failures go to the log rather than killing
+                // the TUI (config could be read-only, disk full, etc.).
+                self.config.theme.base = self.theme_name;
+                if let Err(err) = self.config.save(&self.config_path) {
+                    eprintln!("warning: failed to persist theme: {err:#}");
+                }
             }
             AppMessage::BranchCursorUp => {
                 if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
@@ -1129,18 +1148,27 @@ impl AppState {
         let worktrees = git::list_worktrees(&path)
             .with_context(|| format!("discovering worktrees in {}", path.display()))?;
 
+        // Resolve the repo's default branch from `origin/HEAD` if it's
+        // already been fetched. Falling back to `general.default_base_branch`
+        // when the remote hasn't been fetched yet means grove hands a repo
+        // that uses `master` (or `develop`, or …) the wrong base on first
+        // add; reading `origin/HEAD` avoids that for the common case.
+        let detected = git::detect_default_branch(&path);
+        let base_branch = detected
+            .clone()
+            .unwrap_or_else(|| self.config.general.default_base_branch.clone());
+
         // Persist to disk first — only commit to in-memory state after save succeeds.
         let mut new_config = self.config.clone();
         new_config.repos.push(RepoConfig {
             name: name.clone(),
             path: path.clone(),
-            base_branch: None,
+            base_branch: detected,
             worktree_root: None,
         });
         new_config.save(&self.config_path)?;
         self.config = new_config;
 
-        let base_branch = self.config.general.default_base_branch.clone();
         self.repos.push(Repo {
             name,
             root_path: path,
@@ -1148,6 +1176,7 @@ impl AppState {
             worktrees,
         });
         self.activity.resize_repos(self.repos.len());
+        self.has_github_repo = any_github_remote(&self.repos);
         let new_idx = self.repos.len() - 1;
         self.ui.cursor = Some(SidebarCursor::Repo(new_idx));
         Ok(())
@@ -1173,6 +1202,7 @@ impl AppState {
             self.activity.last_fetched_at.remove(idx);
         }
         self.activity.resize_repos(self.repos.len());
+        self.has_github_repo = any_github_remote(&self.repos);
         self.ui.expanded.remove(&path_key);
         self.ui.active_worktree = self.ui.active_worktree.take().filter(|id| id.repo != name);
 
@@ -1508,6 +1538,14 @@ fn random_slug() -> String {
     format!("{:06x}", n & 0x00ff_ffff)
 }
 
+/// Does at least one repo have a GitHub `origin` remote?  Used to decide
+/// whether the "not authenticated" footer is actionable for this user.
+pub fn any_github_remote(repos: &[Repo]) -> bool {
+    repos
+        .iter()
+        .any(|r| crate::github::discover_owner_repo(&r.root_path).is_some())
+}
+
 fn load_repos(config: &Config) -> Vec<Repo> {
     let mut repos = Vec::with_capacity(config.repos.len());
     for repo_cfg in &config.repos {
@@ -1604,6 +1642,8 @@ impl AppState {
                 a.resize_repos(2);
                 a
             },
+            github_authenticated: false,
+            has_github_repo: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
         state
@@ -1623,6 +1663,8 @@ impl AppState {
             layout: LayoutCache::default(),
             should_quit: false,
             activity: ActivityState::default(),
+            github_authenticated: false,
+            has_github_repo: false,
         }
     }
 }
@@ -2132,6 +2174,95 @@ mod tests {
                 branch: "main".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn cycle_theme_persists_to_disk() {
+        let tmp = temp_dir();
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path.clone());
+        assert_eq!(app.theme_name, crate::theme::ThemeName::default());
+
+        app.update(AppMessage::CycleTheme);
+        let after = app.theme_name;
+        assert_ne!(after, crate::theme::ThemeName::default());
+        assert!(config_path.exists(), "config file should have been written");
+
+        let reloaded = crate::config::Config::load(&config_path).unwrap();
+        assert_eq!(reloaded.theme.base, after);
+    }
+
+    #[test]
+    fn try_add_repo_auto_detects_base_branch_from_origin_head() {
+        let tmp = temp_dir();
+        let bare = tmp.join("remote.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["init", "--bare", "--quiet", "--initial-branch=develop"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let local = tmp.join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&local)
+            .args(["init", "--quiet", "--initial-branch=develop"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        run_git(
+            &local,
+            &["remote", "add", "origin", &bare.display().to_string()],
+        );
+        std::fs::write(local.join("a.txt"), "a").unwrap();
+        run_git(&local, &["add", "."]);
+        run_git(
+            &local,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "init",
+                "--quiet",
+            ],
+        );
+        run_git(&local, &["push", "--quiet", "-u", "origin", "develop"]);
+        // Set origin/HEAD so detect_default_branch picks it up.
+        run_git(&local, &["remote", "set-head", "origin", "--auto"]);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.try_add_repo(local.to_str().unwrap()).unwrap();
+        assert_eq!(app.repos.len(), 1);
+        assert_eq!(app.repos[0].base_branch, "develop");
+        assert_eq!(
+            app.config.repos[0].base_branch.as_deref(),
+            Some("develop"),
+            "persisted config should carry the detected base branch"
+        );
+    }
+
+    #[test]
+    fn try_add_repo_falls_back_to_default_when_no_origin_head() {
+        let tmp = temp_dir();
+        let repo = tmp.join("local");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.try_add_repo(repo.to_str().unwrap()).unwrap();
+        assert_eq!(app.repos[0].base_branch, "main");
+        // Detected base is None → config stays null so the general default
+        // can still override later.
+        assert!(app.config.repos[0].base_branch.is_none());
     }
 
     fn make_scanning_modal(root: PathBuf) -> AppState {
