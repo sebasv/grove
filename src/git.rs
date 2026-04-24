@@ -278,6 +278,21 @@ pub fn is_git_repo(path: &Path) -> bool {
     Repository::open(path).is_ok()
 }
 
+/// Resolve `origin/HEAD` to a branch name, e.g. `"main"` or `"master"`.
+/// Returns `None` when the remote has never been fetched, `origin/HEAD`
+/// was not set by the remote, or the repo has no `origin` at all.
+///
+/// Reads `refs/remotes/origin/HEAD` via libgit2 — no network access.
+pub fn detect_default_branch(repo_root: &Path) -> Option<String> {
+    let repo = Repository::open(repo_root).ok()?;
+    let reference = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
+    // `origin/HEAD` is a symbolic reference pointing at something like
+    // `refs/remotes/origin/main`.  The last path segment is the branch
+    // name we want.
+    let target = reference.symbolic_target()?.to_string();
+    target.rsplit('/').next().map(str::to_string)
+}
+
 /// Walk `root` up to `depth` levels deep looking for git repositories.
 /// Returns the absolute paths of each repo root in sorted order.
 ///
