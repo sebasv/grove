@@ -208,13 +208,6 @@ pub enum Modal {
     },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum NewWorktreeMode {
-    PickBranch,
-    #[default]
-    NewBranch,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct AddRepoModal {
     pub input: TextInput,
@@ -223,26 +216,73 @@ pub struct AddRepoModal {
     pub completion_cursor: Option<usize>,
 }
 
+/// Unified new-worktree modal.  One text input + one filter-as-you-type
+/// list.  The first row is always "Create new branch <input>" (disabled
+/// when the input is empty); rows below are existing local and remote
+/// branches matching the filter.
 #[derive(Debug, Clone)]
 pub struct NewWorktreeModal {
-    pub mode: NewWorktreeMode,
+    pub repo_idx: usize,
     pub input: TextInput,
     pub error: Option<String>,
-    pub repo_idx: usize,
     pub branches: Vec<crate::git::BranchEntry>,
-    pub branch_cursor: usize,
+    /// Indices into `branches` that match the current filter.  Empty when
+    /// the modal is fresh (no filter) but also when the repo genuinely
+    /// has no branches.
+    pub filter_matches: Vec<usize>,
+    /// 0 = "create new branch" row. 1.. = `filter_matches[cursor - 1]`.
+    /// Stays at 0 when the user types, so Enter defaults to creating.
+    pub cursor: usize,
 }
 
 impl NewWorktreeModal {
-    pub fn for_repo(repo_idx: usize) -> Self {
+    pub fn for_repo(repo_idx: usize, branches: Vec<crate::git::BranchEntry>) -> Self {
+        let filter_matches = (0..branches.len()).collect();
         Self {
-            mode: NewWorktreeMode::NewBranch,
+            repo_idx,
             input: TextInput::default(),
             error: None,
-            repo_idx,
-            branches: Vec::new(),
-            branch_cursor: 0,
+            branches,
+            filter_matches,
+            cursor: 0,
         }
+    }
+
+    /// Total row count (create-new + filtered branches).
+    pub fn total_rows(&self) -> usize {
+        1 + self.filter_matches.len()
+    }
+
+    /// Return the selected branch entry, if the cursor is on a branch row.
+    pub fn selected_branch(&self) -> Option<&crate::git::BranchEntry> {
+        if self.cursor == 0 {
+            return None;
+        }
+        let idx = *self.filter_matches.get(self.cursor - 1)?;
+        self.branches.get(idx)
+    }
+
+    pub fn recompute_filter(&mut self) {
+        let needle = self.input.value().to_lowercase();
+        let matches: Vec<usize> = if needle.is_empty() {
+            (0..self.branches.len()).collect()
+        } else {
+            self.branches
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| {
+                    if b.display().to_lowercase().contains(&needle) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        self.filter_matches = matches;
+        // Keep the cursor on the "create new" row by default so typing
+        // never silently steers Enter onto an existing branch.
+        self.cursor = 0;
     }
 }
 
@@ -297,7 +337,6 @@ pub enum AppMessage {
     CycleTheme,
     BranchCursorUp,
     BranchCursorDown,
-    SwitchWorktreeMode,
     CompletionUp,
     CompletionDown,
     CompletionAccept,
@@ -393,23 +432,13 @@ impl AppState {
             }
             AppMessage::BranchCursorUp => {
                 if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
-                    m.branch_cursor = m.branch_cursor.saturating_sub(1);
+                    m.cursor = m.cursor.saturating_sub(1);
                 }
             }
             AppMessage::BranchCursorDown => {
                 if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
-                    if !m.branches.is_empty() {
-                        m.branch_cursor = (m.branch_cursor + 1).min(m.branches.len() - 1);
-                    }
-                }
-            }
-            AppMessage::SwitchWorktreeMode => {
-                if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
-                    m.mode = match m.mode {
-                        NewWorktreeMode::PickBranch => NewWorktreeMode::NewBranch,
-                        NewWorktreeMode::NewBranch => NewWorktreeMode::PickBranch,
-                    };
-                    m.error = None;
+                    let last = m.total_rows().saturating_sub(1);
+                    m.cursor = (m.cursor + 1).min(last);
                 }
             }
             AppMessage::CompletionUp => {
@@ -598,16 +627,9 @@ impl AppState {
             return;
         }
         let branches = git::list_branches(&self.repos[repo_idx].root_path).unwrap_or_default();
-        let mode = if branches.is_empty() {
-            NewWorktreeMode::NewBranch
-        } else {
-            NewWorktreeMode::PickBranch
-        };
-        self.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal {
-            mode,
-            branches,
-            ..NewWorktreeModal::for_repo(repo_idx)
-        }));
+        self.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal::for_repo(
+            repo_idx, branches,
+        )));
     }
 
     fn open_confirm_remove_worktree(&mut self) {
@@ -655,14 +677,19 @@ impl AppState {
             Some(Modal::AddRepo(m)) => {
                 f(&mut m.input);
                 m.error = None;
+                self.recompute_completions();
             }
-            Some(Modal::NewWorktree(m)) if m.mode == NewWorktreeMode::NewBranch => {
+            Some(Modal::NewWorktree(m)) => {
                 f(&mut m.input);
                 m.error = None;
+                // Filter recomputes on every keystroke.  The branch list
+                // for a repo is typically < 100 entries, so a linear
+                // substring match is fast enough to not warrant a real
+                // fuzzy library.
+                m.recompute_filter();
             }
-            _ => return,
+            _ => (),
         }
-        self.recompute_completions();
     }
 
     fn submit_modal(&mut self) {
@@ -763,8 +790,10 @@ impl AppState {
         let wt_root = self.effective_worktree_root(repo_idx);
         let wt_root_ref = wt_root.as_deref();
 
-        match m.mode {
-            NewWorktreeMode::NewBranch => {
+        // Cursor == 0 → "Create new branch <input>".  Any other cursor
+        // position selects an existing branch.
+        match m.selected_branch() {
+            None => {
                 let branch = m.input.value().trim();
                 if branch.is_empty() {
                     anyhow::bail!("branch name cannot be empty");
@@ -776,10 +805,7 @@ impl AppState {
                 }
                 git::create_worktree(&repo_root, branch, &path, &base_branch)?;
             }
-            NewWorktreeMode::PickBranch => {
-                let Some(entry) = m.branches.get(m.branch_cursor) else {
-                    anyhow::bail!("no branch selected");
-                };
+            Some(entry) => {
                 let path =
                     git::derive_worktree_path(&repo_root, &repo_name, &entry.name, wt_root_ref);
                 if let Some(parent) = path.parent() {
@@ -1982,5 +2008,59 @@ mod tests {
                 branch: "main".to_string(),
             })
         );
+    }
+
+    fn branch(name: &str, remote: Option<&str>) -> crate::git::BranchEntry {
+        crate::git::BranchEntry {
+            name: name.to_string(),
+            remote: remote.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn new_worktree_modal_total_rows_is_create_plus_matches() {
+        let m = NewWorktreeModal::for_repo(0, vec![branch("main", None), branch("feat/x", None)]);
+        // Empty input → no filter → all branches match.
+        assert_eq!(m.total_rows(), 3); // create + main + feat/x
+        assert_eq!(m.cursor, 0);
+    }
+
+    #[test]
+    fn recompute_filter_is_case_insensitive_substring_and_resets_cursor() {
+        let mut m = NewWorktreeModal::for_repo(
+            0,
+            vec![
+                branch("main", None),
+                branch("feat/Search", None),
+                branch("fix/typo", None),
+                branch("search-ui", Some("origin")),
+            ],
+        );
+        m.cursor = 2;
+        for c in "search".chars() {
+            m.input.insert_char(c);
+        }
+        m.recompute_filter();
+        // Both "feat/Search" and "origin/search-ui" contain "search".
+        assert_eq!(m.filter_matches.len(), 2);
+        // Cursor resets so Enter creates a new branch named "search"
+        // rather than picking one that happens to be on the cursor row.
+        assert_eq!(m.cursor, 0);
+    }
+
+    #[test]
+    fn selected_branch_returns_none_when_cursor_on_create_row() {
+        let m = NewWorktreeModal::for_repo(0, vec![branch("main", None)]);
+        assert_eq!(m.cursor, 0);
+        assert!(m.selected_branch().is_none());
+    }
+
+    #[test]
+    fn selected_branch_returns_entry_at_filter_cursor() {
+        let mut m =
+            NewWorktreeModal::for_repo(0, vec![branch("main", None), branch("feat/x", None)]);
+        m.cursor = 2; // "feat/x" (row 1 is main, row 2 is feat/x)
+        let got = m.selected_branch().unwrap();
+        assert_eq!(got.name, "feat/x");
     }
 }
