@@ -21,6 +21,9 @@ pub enum Event {
     StatusReady(WorktreeId, WorktreeStatus),
     DiffReady(WorktreeId, Vec<crate::git::DiffFile>),
     PrStatusReady(WorktreeId, crate::model::PrStatus),
+    /// A `grove <dir>` scan finished; `paths` is the sorted list of
+    /// repos discovered under the scan root.
+    ScanCompleted(Vec<PathBuf>),
     /// A terminal's reader thread advanced its vt100 parser state; trigger a
     /// repaint.  The active-worktree's parser is the one we render, so we
     /// don't need to know which terminal emitted the event.
@@ -90,6 +93,15 @@ pub fn spawn_diff_refresh(
         }
         .unwrap_or_default();
         let _ = tx.send(Event::DiffReady(id, files));
+    });
+}
+
+/// Spawn a blocking task that walks `root` up to `depth` levels looking
+/// for git repositories, then sends the sorted result back.
+pub fn spawn_scan(root: PathBuf, depth: u8, tx: EventSender) {
+    tokio::task::spawn_blocking(move || {
+        let paths = crate::git::discover_repos(&root, depth);
+        let _ = tx.send(Event::ScanCompleted(paths));
     });
 }
 

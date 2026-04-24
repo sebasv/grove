@@ -2,6 +2,7 @@ mod add_repo;
 mod badges;
 mod confirm;
 pub mod diff;
+mod discovered;
 mod help;
 mod main_pane;
 mod sidebar;
@@ -60,6 +61,9 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
             }
             Modal::ForceDeleteBranch { branch, .. } => {
                 confirm::render_force_delete_branch(frame, frame.area(), branch);
+            }
+            Modal::DiscoveredRepos(state) => {
+                discovered::render(frame, frame.area(), state);
             }
         }
     }
