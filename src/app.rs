@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::activity::ActivityState;
 use crate::async_evt::WorktreeId;
 use crate::config::{Config, RepoConfig};
 use crate::git;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub theme_name: crate::theme::ThemeName,
     pub layout: LayoutCache,
     pub should_quit: bool,
+    pub activity: ActivityState,
 }
 
 /// Cached rects from the most recent `ui::render` pass.  Used by mouse
@@ -325,6 +327,8 @@ impl AppState {
         } else {
             Some(SidebarCursor::Repo(0))
         };
+        let mut activity = ActivityState::default();
+        activity.resize_repos(repos.len());
         Ok(Self {
             config,
             config_path,
@@ -340,6 +344,7 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity,
         })
     }
 
@@ -1011,6 +1016,7 @@ impl AppState {
             base_branch,
             worktrees,
         });
+        self.activity.resize_repos(self.repos.len());
         let new_idx = self.repos.len() - 1;
         self.ui.cursor = Some(SidebarCursor::Repo(new_idx));
         Ok(())
@@ -1029,6 +1035,13 @@ impl AppState {
 
         let path_key = self.repos[idx].root_path.to_string_lossy().into_owned();
         self.repos.remove(idx);
+        // Shift the activity scheduler's last-fetched timeline so subsequent
+        // repos keep their timestamps.  Repos at and after `idx` slide left by
+        // one; the tail becomes `None` via `resize_repos`.
+        if idx < self.activity.last_fetched_at.len() {
+            self.activity.last_fetched_at.remove(idx);
+        }
+        self.activity.resize_repos(self.repos.len());
         self.ui.expanded.remove(&path_key);
         self.ui.active_worktree = self.ui.active_worktree.take().filter(|id| id.repo != name);
 
@@ -1455,6 +1468,11 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity: {
+                let mut a = ActivityState::default();
+                a.resize_repos(2);
+                a
+            },
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
         state
@@ -1473,6 +1491,7 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity: ActivityState::default(),
         }
     }
 }

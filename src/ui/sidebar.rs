@@ -74,6 +74,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     lines.push(Line::from(" ?    help"));
     lines.push(Line::from(" q    quit"));
 
+    // Activity footer — last row of the sidebar.  Shows any background
+    // tasks in flight so the user understands why a badge or list is
+    // about to change.  Idle state is blank.
+    let summary = app.activity.summary();
+    let footer = if summary.is_empty() {
+        Line::from("")
+    } else {
+        Line::styled(format!(" {summary}"), Style::default().fg(app.theme.dim))
+    };
+    lines.push(Line::from(""));
+    lines.push(footer);
+
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -228,5 +240,42 @@ mod tests {
             ..WorktreeStatus::default()
         });
         insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn footer_is_blank_when_activity_is_idle() {
+        let app = AppState::fixture();
+        // Render with a smaller canvas that actually cuts at the footer
+        // rows; otherwise the visible area has trailing blanks that hide
+        // the test intent.
+        let backend = TestBackend::new(40, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &app))
+            .unwrap();
+        let output = terminal.backend().to_string();
+        // Idle activity → summary is empty → no ⟳ glyph anywhere.
+        assert!(!output.contains("⟳"));
+    }
+
+    #[test]
+    fn footer_shows_fetch_summary_when_active() {
+        use crate::activity::{ActivityKind, ActivityScope};
+        let mut app = AppState::fixture();
+        app.activity.start(
+            ActivityKind::Fetch,
+            ActivityScope::Repo(0),
+            "fetching grove",
+        );
+        let backend = TestBackend::new(40, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &app))
+            .unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("⟳ fetching grove"),
+            "expected fetch summary in sidebar:\n{output}"
+        );
     }
 }

@@ -500,6 +500,16 @@ pub fn force_delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
     run_git_cmd(repo_root, &["branch", "-D", branch])
 }
 
+/// Shell out to `git fetch --all --prune` for `repo_root`.  Shelling
+/// out (rather than calling libgit2) lets the user's `~/.gitconfig` —
+/// `http.lowSpeedLimit`, proxy settings, SSH agent — drive the
+/// network layer, so a repo that works on the command line also works
+/// in grove.  The command inherits `stdout`/`stderr` from the caller
+/// but we only surface them on failure.
+pub fn fetch_remote(repo_root: &Path) -> Result<()> {
+    run_git_cmd(repo_root, &["fetch", "--all", "--prune", "--quiet"])
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};

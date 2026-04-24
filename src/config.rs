@@ -42,6 +42,10 @@ pub struct General {
     /// When absent, worktrees are placed next to the repo (sibling strategy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_root: Option<PathBuf>,
+    /// Seconds between background `git fetch` ticks per repo.  Set to 0
+    /// to disable the scheduler entirely (manual `r` still works).
+    #[serde(default = "default_fetch_cadence_secs")]
+    pub fetch_cadence_secs: u64,
 }
 
 impl Default for General {
@@ -49,12 +53,17 @@ impl Default for General {
         Self {
             default_base_branch: default_base_branch(),
             worktree_root: None,
+            fetch_cadence_secs: default_fetch_cadence_secs(),
         }
     }
 }
 
 fn default_base_branch() -> String {
     "main".to_string()
+}
+
+fn default_fetch_cadence_secs() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -128,6 +137,7 @@ mod tests {
             general: General {
                 default_base_branch: "main".to_string(),
                 worktree_root: None,
+                fetch_cadence_secs: default_fetch_cadence_secs(),
             },
             theme: ThemeConfig::default(),
             repos: vec![
