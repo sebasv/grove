@@ -205,21 +205,47 @@ pub enum Modal {
         repo_idx: usize,
     },
     NewWorktree(NewWorktreeModal),
+    /// Unified worktree-deletion modal.  Offers keep + a single
+    /// contextual delete option based on `variant`.  Keys are
+    /// absolute (`k` / `d` / `D` / `Esc`) rather than an
+    /// arrow-navigable list, so muscle-memory Enter can't silently
+    /// destroy unmerged work.
     ConfirmRemoveWorktree {
         id: WorktreeId,
-    },
-    ConfirmDeleteBranch {
-        branch: String,
-        repo_root: PathBuf,
+        variant: DeleteVariant,
+        /// An open PR number for this branch, if any.  Renders a
+        /// "force-delete will close PR #N" warning above the options in
+        /// the unmerged variant; the regular `-d` path in the merged
+        /// variant is safe for an open PR so the warning is suppressed
+        /// there.
         pr_number: Option<u32>,
-    },
-    ForceDeleteBranch {
-        branch: String,
-        repo_root: PathBuf,
+        /// Inline error after a failed submit (e.g. `d` attempted on an
+        /// unmerged branch).  Clears when the user picks a different
+        /// option.
+        error: Option<String>,
     },
     /// Results of a `grove <dir>` scan waiting for the user to pick
     /// which repos to add.
     DiscoveredRepos(DiscoveredReposModal),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteVariant {
+    /// Branch is fully merged into its base — safe to `git branch -d`.
+    Merged,
+    /// Branch has unmerged commits — only force-delete (`-D`) will
+    /// remove it.
+    Unmerged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteChoice {
+    /// Keep the branch; just remove the worktree (safest default).
+    KeepBranch,
+    /// `git branch -d` — rejected by git if the branch isn't merged.
+    Delete,
+    /// `git branch -D` — unconditional.
+    ForceDelete,
 }
 
 #[derive(Debug, Clone)]
@@ -391,6 +417,8 @@ pub enum AppMessage {
     ToggleDiscoveredSelection,
     DiscoveredCursorUp,
     DiscoveredCursorDown,
+    /// User picked a deletion option in the ConfirmRemoveWorktree modal.
+    ConfirmWorktreeDeletion(DeleteChoice),
     Quit,
     NoOp,
 }
@@ -533,6 +561,7 @@ impl AppState {
             AppMessage::ToggleDiscoveredSelection => self.toggle_discovered_selection(),
             AppMessage::DiscoveredCursorUp => self.move_discovered_cursor(-1),
             AppMessage::DiscoveredCursorDown => self.move_discovered_cursor(1),
+            AppMessage::ConfirmWorktreeDeletion(choice) => self.resolve_worktree_deletion(choice),
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
         }
@@ -762,19 +791,95 @@ impl AppState {
         let Some(SidebarCursor::Worktree { repo, worktree }) = self.ui.cursor else {
             return;
         };
+        let Some(repo_ref) = self.repos.get(repo) else {
+            return;
+        };
+        let Some(wt) = repo_ref.worktrees.get(worktree) else {
+            return;
+        };
         // Refuse to remove the primary checkout.
-        if self
-            .repos
-            .get(repo)
-            .and_then(|r| r.worktrees.get(worktree))
-            .map(|wt| wt.is_primary)
-            .unwrap_or(true)
-        {
+        if wt.is_primary {
             return;
         }
+
+        // Figure out whether a regular `-d` would succeed, so the modal
+        // shows `[d]` or `[D]` depending on the branch's merge state.
+        // libgit2 does this offline, no network.
+        let variant =
+            if git::is_branch_merged(&repo_ref.root_path, &wt.branch, &repo_ref.base_branch) {
+                DeleteVariant::Merged
+            } else {
+                DeleteVariant::Unmerged
+            };
+        let pr_number = wt.pr.as_ref().and_then(|p| {
+            matches!(
+                p.state,
+                crate::model::PrState::Open | crate::model::PrState::Draft
+            )
+            .then_some(p.number)
+        });
+
         self.ui.modal = Some(Modal::ConfirmRemoveWorktree {
             id: (repo, worktree),
+            variant,
+            pr_number,
+            error: None,
         });
+    }
+
+    fn resolve_worktree_deletion(&mut self, choice: DeleteChoice) {
+        // Pull the modal out so we can rebuild it with any inline error
+        // without holding a borrow on `self`.
+        let Some(Modal::ConfirmRemoveWorktree {
+            id,
+            variant,
+            pr_number,
+            ..
+        }) = self.ui.modal.take()
+        else {
+            return;
+        };
+
+        // `d` on an unmerged branch is rejected inline rather than chaining
+        // to a force-delete modal.  The user must explicitly pick `D`.
+        if choice == DeleteChoice::Delete && variant == DeleteVariant::Unmerged {
+            self.ui.modal = Some(Modal::ConfirmRemoveWorktree {
+                id,
+                variant,
+                pr_number,
+                error: Some("branch has unmerged commits; press D to force-delete".to_string()),
+            });
+            return;
+        }
+
+        // Collect branch + repo_root before we invalidate indices with
+        // `try_remove_worktree`.
+        let Some((branch, repo_root)) = self.repos.get(id.0).and_then(|repo| {
+            repo.worktrees
+                .get(id.1)
+                .map(|wt| (wt.branch.clone(), repo.root_path.clone()))
+        }) else {
+            return;
+        };
+
+        if let Err(err) = self.try_remove_worktree(id) {
+            eprintln!("warning: failed to remove worktree: {err:#}");
+            return;
+        }
+
+        match choice {
+            DeleteChoice::KeepBranch => {}
+            DeleteChoice::Delete => {
+                if let Err(err) = git::delete_branch(&repo_root, &branch) {
+                    eprintln!("warning: failed to delete branch {branch}: {err:#}");
+                }
+            }
+            DeleteChoice::ForceDelete => {
+                if let Err(err) = git::force_delete_branch(&repo_root, &branch) {
+                    eprintln!("warning: failed to force-delete branch {branch}: {err:#}");
+                }
+            }
+        }
     }
 
     fn open_confirm_remove_repo(&mut self) {
@@ -839,50 +944,12 @@ impl AppState {
                     }));
                 }
             }
-            Some(Modal::ConfirmRemoveWorktree { id }) => {
-                let info = self.repos.get(id.0).and_then(|repo| {
-                    repo.worktrees.get(id.1).map(|wt| {
-                        let pr_number = wt.pr.as_ref().and_then(|p| {
-                            matches!(
-                                p.state,
-                                crate::model::PrState::Open | crate::model::PrState::Draft
-                            )
-                            .then_some(p.number)
-                        });
-                        (wt.branch.clone(), repo.root_path.clone(), pr_number)
-                    })
-                });
-                if let Err(err) = self.try_remove_worktree(id) {
-                    eprintln!("warning: failed to remove worktree: {err:#}");
-                    return;
-                }
-                if let Some((branch, repo_root, pr_number)) = info {
-                    self.ui.modal = Some(Modal::ConfirmDeleteBranch {
-                        branch,
-                        repo_root,
-                        pr_number,
-                    });
-                }
-            }
-            Some(Modal::ConfirmDeleteBranch {
-                branch,
-                repo_root,
-                pr_number: _,
-            }) => match git::delete_branch(&repo_root, &branch) {
-                Ok(()) => {}
-                Err(err) => {
-                    let msg = format!("{err:#}");
-                    if msg.contains("not fully merged") {
-                        self.ui.modal = Some(Modal::ForceDeleteBranch { branch, repo_root });
-                    } else {
-                        eprintln!("warning: failed to delete branch {branch}: {err:#}");
-                    }
-                }
-            },
-            Some(Modal::ForceDeleteBranch { branch, repo_root }) => {
-                if let Err(err) = git::force_delete_branch(&repo_root, &branch) {
-                    eprintln!("warning: failed to force-delete branch {branch}: {err:#}");
-                }
+            // ConfirmRemoveWorktree now resolves via ConfirmWorktreeDeletion
+            // (absolute-key path), not via the generic SubmitModal.  A stray
+            // Enter on the keep-branch row routes via KeepBranch below.
+            Some(modal @ Modal::ConfirmRemoveWorktree { .. }) => {
+                self.ui.modal = Some(modal);
+                self.resolve_worktree_deletion(DeleteChoice::KeepBranch);
             }
             Some(Modal::DiscoveredRepos(m)) => {
                 if m.scanning {
@@ -2431,5 +2498,148 @@ mod tests {
         // to macOS /private/var symlink expansion.
         let canonical_a = std::fs::canonicalize(&a).unwrap();
         assert_eq!(app.repos[0].root_path, canonical_a);
+    }
+
+    /// Helper: build a real repo with `main` and a feature branch, then
+    /// register it in an `AppState` and cursor onto the feature worktree.
+    /// Returns (app, feature_branch_name).
+    fn setup_repo_with_feature_worktree(merged: bool) -> (AppState, String) {
+        let tmp = temp_dir();
+        let repo = tmp.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+        // Starting on main with one commit.  Create feat/x off main.
+        run_git(&repo, &["checkout", "-b", "feat/x"]);
+        std::fs::write(repo.join("f.txt"), "f").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "feat",
+                "--quiet",
+            ],
+        );
+        if merged {
+            // Fast-forward main to feat/x so `feat/x` is fully merged.
+            run_git(&repo, &["checkout", "main"]);
+            run_git(&repo, &["merge", "--ff-only", "--quiet", "feat/x"]);
+        } else {
+            run_git(&repo, &["checkout", "main"]);
+        }
+
+        // Add a linked worktree for feat/x.
+        let wt_path = tmp.join("repo-feat-x");
+        run_git(
+            &repo,
+            &["worktree", "add", &wt_path.display().to_string(), "feat/x"],
+        );
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.try_add_repo(repo.to_str().unwrap()).unwrap();
+        // Cursor onto the feat/x worktree.
+        let feat_idx = app.repos[0]
+            .worktrees
+            .iter()
+            .position(|w| w.branch == "feat/x")
+            .unwrap();
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 0,
+            worktree: feat_idx,
+        });
+        (app, "feat/x".to_string())
+    }
+
+    #[test]
+    fn remove_worktree_modal_opens_merged_variant_when_branch_is_merged() {
+        let (mut app, _branch) = setup_repo_with_feature_worktree(true);
+        app.update(AppMessage::OpenConfirmRemoveWorktree);
+        let Some(Modal::ConfirmRemoveWorktree { variant, .. }) = &app.ui.modal else {
+            panic!("expected ConfirmRemoveWorktree");
+        };
+        assert_eq!(*variant, DeleteVariant::Merged);
+    }
+
+    #[test]
+    fn remove_worktree_modal_opens_unmerged_variant_when_branch_diverges() {
+        let (mut app, _branch) = setup_repo_with_feature_worktree(false);
+        app.update(AppMessage::OpenConfirmRemoveWorktree);
+        let Some(Modal::ConfirmRemoveWorktree { variant, .. }) = &app.ui.modal else {
+            panic!("expected ConfirmRemoveWorktree");
+        };
+        assert_eq!(*variant, DeleteVariant::Unmerged);
+    }
+
+    #[test]
+    fn keep_branch_removes_worktree_but_keeps_branch() {
+        let (mut app, branch) = setup_repo_with_feature_worktree(true);
+        app.update(AppMessage::OpenConfirmRemoveWorktree);
+        app.update(AppMessage::ConfirmWorktreeDeletion(
+            DeleteChoice::KeepBranch,
+        ));
+
+        // Worktree gone.
+        let wts = &app.repos[0].worktrees;
+        assert!(
+            wts.iter().all(|w| w.branch != branch),
+            "worktree should have been removed: {wts:?}"
+        );
+        // Branch still exists on disk.
+        let branches = crate::git::list_branches(&app.repos[0].root_path).unwrap();
+        assert!(branches
+            .iter()
+            .any(|b| b.name == branch && b.remote.is_none()));
+    }
+
+    #[test]
+    fn regular_delete_succeeds_on_merged_branch() {
+        let (mut app, branch) = setup_repo_with_feature_worktree(true);
+        app.update(AppMessage::OpenConfirmRemoveWorktree);
+        app.update(AppMessage::ConfirmWorktreeDeletion(DeleteChoice::Delete));
+
+        let branches = crate::git::list_branches(&app.repos[0].root_path).unwrap();
+        assert!(branches
+            .iter()
+            .all(|b| b.name != branch || b.remote.is_some()));
+    }
+
+    #[test]
+    fn regular_delete_on_unmerged_shows_inline_error_and_keeps_modal_open() {
+        let (mut app, branch) = setup_repo_with_feature_worktree(false);
+        app.update(AppMessage::OpenConfirmRemoveWorktree);
+        app.update(AppMessage::ConfirmWorktreeDeletion(DeleteChoice::Delete));
+
+        // Modal stays open with an inline error pointing at `D`.
+        let Some(Modal::ConfirmRemoveWorktree { error, .. }) = &app.ui.modal else {
+            panic!("expected modal still open");
+        };
+        let msg = error.as_deref().unwrap_or("");
+        assert!(msg.contains("force-delete"), "message: {msg}");
+        assert!(msg.to_lowercase().contains("d"));
+        // Branch still present.
+        let branches = crate::git::list_branches(&app.repos[0].root_path).unwrap();
+        assert!(branches
+            .iter()
+            .any(|b| b.name == branch && b.remote.is_none()));
+    }
+
+    #[test]
+    fn force_delete_removes_unmerged_branch() {
+        let (mut app, branch) = setup_repo_with_feature_worktree(false);
+        app.update(AppMessage::OpenConfirmRemoveWorktree);
+        app.update(AppMessage::ConfirmWorktreeDeletion(
+            DeleteChoice::ForceDelete,
+        ));
+
+        let branches = crate::git::list_branches(&app.repos[0].root_path).unwrap();
+        assert!(branches
+            .iter()
+            .all(|b| b.name != branch || b.remote.is_some()));
     }
 }

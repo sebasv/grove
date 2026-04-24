@@ -49,18 +49,28 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
                     confirm::render_remove_repo(frame, frame.area(), &repo.name);
                 }
             }
-            Modal::ConfirmRemoveWorktree { id } => {
-                if let Some(wt) = app.repos.get(id.0).and_then(|r| r.worktrees.get(id.1)) {
-                    confirm::render_remove_worktree(frame, frame.area(), &wt.branch);
-                }
-            }
-            Modal::ConfirmDeleteBranch {
-                branch, pr_number, ..
+            Modal::ConfirmRemoveWorktree {
+                id,
+                variant,
+                pr_number,
+                error,
             } => {
-                confirm::render_delete_branch(frame, frame.area(), branch, *pr_number);
-            }
-            Modal::ForceDeleteBranch { branch, .. } => {
-                confirm::render_force_delete_branch(frame, frame.area(), branch);
+                if let Some((repo, wt)) = app
+                    .repos
+                    .get(id.0)
+                    .and_then(|r| r.worktrees.get(id.1).map(|wt| (r, wt)))
+                {
+                    confirm::render_remove_worktree(
+                        frame,
+                        frame.area(),
+                        &wt.branch,
+                        &wt.path,
+                        &repo.name,
+                        *variant,
+                        *pr_number,
+                        error.as_deref(),
+                    );
+                }
             }
             Modal::DiscoveredRepos(state) => {
                 discovered::render(frame, frame.area(), state);

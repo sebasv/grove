@@ -355,6 +355,46 @@ fn looks_like_repo_root(path: &Path) -> bool {
     path.join("HEAD").is_file() && path.join("config").is_file()
 }
 
+/// Is every commit on `branch` reachable from `base` (or its `origin/base`
+/// tracking ref, when present)?  Returns `true` when a safe `git branch -d`
+/// will succeed and `false` when a force-delete (`-D`) would be required.
+///
+/// Missing branches return `false` (treat the "branch doesn't exist" case
+/// as unmerged — safer default for a deletion UI).  `origin/base` is
+/// preferred over the local base because worktree workflows often leave
+/// the local base branch behind.
+pub fn is_branch_merged(repo_root: &Path, branch: &str, base: &str) -> bool {
+    let Ok(repo) = Repository::open(repo_root) else {
+        return false;
+    };
+    let Ok(branch_ref) = repo.find_branch(branch, BranchType::Local) else {
+        return false;
+    };
+    let Some(branch_oid) = branch_ref.get().target() else {
+        return false;
+    };
+    // Prefer origin/<base> for the same reason compute_branch_diff does:
+    // in worktree workflows the local base branch is often never checked
+    // out and may lag behind the remote.
+    let base_oid = repo
+        .find_branch(&format!("origin/{base}"), BranchType::Remote)
+        .ok()
+        .and_then(|b| b.get().target())
+        .or_else(|| {
+            repo.find_branch(base, BranchType::Local)
+                .ok()
+                .and_then(|b| b.get().target())
+        });
+    let Some(base_oid) = base_oid else {
+        return false;
+    };
+    // "branch merged into base" iff every commit on branch is reachable
+    // from base — equivalent to `git merge-base --is-ancestor branch base`.
+    repo.graph_descendant_of(base_oid, branch_oid)
+        .unwrap_or(false)
+        || branch_oid == base_oid
+}
+
 pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
     let repo = Repository::open(repo_root)
         .with_context(|| format!("opening repository at {}", repo_root.display()))?;

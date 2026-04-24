@@ -27,70 +27,82 @@ pub fn render_remove_repo(frame: &mut Frame, area: Rect, repo_name: &str) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-pub fn render_remove_worktree(frame: &mut Frame, area: Rect, branch: &str) {
-    let modal_area = centered_rect(58, 8, area);
+#[allow(clippy::too_many_arguments)]
+pub fn render_remove_worktree(
+    frame: &mut Frame,
+    area: Rect,
+    branch: &str,
+    worktree_path: &std::path::Path,
+    repo_name: &str,
+    variant: crate::app::DeleteVariant,
+    pr_number: Option<u32>,
+    error: Option<&str>,
+) {
+    let unmerged = matches!(variant, crate::app::DeleteVariant::Unmerged);
+    let height = if pr_number.is_some() && unmerged {
+        14u16
+    } else if unmerged {
+        13
+    } else {
+        12
+    };
+    let modal_area = centered_rect(66, height, area);
     frame.render_widget(Clear, modal_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Remove worktree? ");
+    let title = format!(" Remove worktree for {branch} ");
+    let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(format!("  Remove worktree for \"{branch}\"?")),
-        Line::from("  (runs `git worktree remove`; branch is kept)"),
-        Line::from(""),
-        Line::from("  y/Enter confirm  ·  n/Esc cancel"),
-    ];
-    frame.render_widget(Paragraph::new(lines), inner);
-}
+    let dim = Style::default().fg(Color::DarkGray);
+    let warn = Style::default().fg(Color::Yellow);
+    let err_style = Style::default().fg(Color::Red);
 
-pub fn render_delete_branch(frame: &mut Frame, area: Rect, branch: &str, pr_number: Option<u32>) {
-    let height = if pr_number.is_some() { 10u16 } else { 8 };
-    let modal_area = centered_rect(64, height, area);
-    frame.render_widget(Clear, modal_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Delete branch? ");
-    let inner = block.inner(modal_area);
-    frame.render_widget(block, modal_area);
-
-    let mut lines = vec![
+    let mut lines: Vec<Line<'static>> = vec![
         Line::from(""),
-        Line::from(format!("  Also delete branch \"{branch}\" locally?")),
+        Line::from(format!("  Repository: {repo_name}")),
+        Line::styled(format!("  Worktree:   {}", worktree_path.display()), dim),
         Line::from(""),
     ];
-    if let Some(n) = pr_number {
+
+    // Warning block — only for the unmerged (force-delete) case.
+    if unmerged {
         lines.push(Line::styled(
-            format!("  Warning: PR #{n} is open — deleting will close it."),
-            Style::default().fg(Color::Yellow),
+            format!("  ⚠ \"{branch}\" has unmerged commits."),
+            warn,
         ));
+        if let Some(n) = pr_number {
+            lines.push(Line::styled(
+                format!("  ⚠ PR #{n} is open — force-delete will close it."),
+                warn,
+            ));
+        }
         lines.push(Line::from(""));
     }
-    lines.push(Line::from("  y/Enter confirm  ·  n/Esc skip"));
-    frame.render_widget(Paragraph::new(lines), inner);
-}
 
-pub fn render_force_delete_branch(frame: &mut Frame, area: Rect, branch: &str) {
-    let modal_area = centered_rect(64, 8, area);
-    frame.render_widget(Clear, modal_area);
+    // Options.  Default action is always keep.
+    lines.push(Line::from("  [k] Remove worktree, keep branch  (default)"));
+    if unmerged {
+        lines.push(Line::from(
+            "  [D] Remove worktree and force-delete branch (-D)",
+        ));
+    } else {
+        lines.push(Line::from("  [d] Remove worktree and delete branch (-d)"));
+    }
+    lines.push(Line::from(""));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Branch has unmerged commits ");
-    let inner = block.inner(modal_area);
-    frame.render_widget(block, modal_area);
+    if let Some(msg) = error {
+        lines.push(Line::styled(format!("  ! {msg}"), err_style));
+        lines.push(Line::from(""));
+    }
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(format!("  \"{branch}\" has unmerged commits.")),
-        Line::from("  Force delete (data loss)?"),
-        Line::from(""),
-        Line::from("  y/Enter force delete  ·  n/Esc cancel"),
-    ];
+    let hint = if unmerged {
+        "  k keep · D force-delete · Esc cancel"
+    } else {
+        "  k keep · d delete · Esc cancel"
+    };
+    lines.push(Line::from(hint));
+
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

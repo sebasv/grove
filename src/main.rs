@@ -649,10 +649,8 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
             Modal::AddRepo(_) => add_repo_keys(key),
             Modal::NewWorktree(m) => new_worktree_keys(key, m),
             Modal::DiscoveredRepos(_) => discovered_keys(key),
-            Modal::ConfirmRemoveRepo { .. }
-            | Modal::ConfirmRemoveWorktree { .. }
-            | Modal::ConfirmDeleteBranch { .. }
-            | Modal::ForceDeleteBranch { .. } => confirm_keys(key),
+            Modal::ConfirmRemoveWorktree { .. } => remove_worktree_keys(key),
+            Modal::ConfirmRemoveRepo { .. } => confirm_keys(key),
         });
     }
 
@@ -970,6 +968,24 @@ fn discovered_keys(key: KeyEvent) -> AppMessage {
         KeyCode::Char(' ') => AppMessage::ToggleDiscoveredSelection,
         KeyCode::Char('j') | KeyCode::Down => AppMessage::DiscoveredCursorDown,
         KeyCode::Char('k') | KeyCode::Up => AppMessage::DiscoveredCursorUp,
+        _ => AppMessage::NoOp,
+    }
+}
+
+/// Absolute keys for the unified remove-worktree modal.  No arrow
+/// navigation — the user picks an outcome by pressing the letter of
+/// the option they want.  Capital D is intentionally distinct from
+/// lowercase d so muscle-memory Enter can't silently force-delete an
+/// unmerged branch.
+fn remove_worktree_keys(key: KeyEvent) -> AppMessage {
+    use crate::app::DeleteChoice;
+    match key.code {
+        KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Enter => {
+            AppMessage::ConfirmWorktreeDeletion(DeleteChoice::KeepBranch)
+        }
+        KeyCode::Char('d') => AppMessage::ConfirmWorktreeDeletion(DeleteChoice::Delete),
+        KeyCode::Char('D') => AppMessage::ConfirmWorktreeDeletion(DeleteChoice::ForceDelete),
+        KeyCode::Esc => AppMessage::CloseModal,
         _ => AppMessage::NoOp,
     }
 }
