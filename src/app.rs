@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::activity::ActivityState;
 use crate::async_evt::WorktreeId;
 use crate::config::{Config, RepoConfig};
 use crate::git;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub theme_name: crate::theme::ThemeName,
     pub layout: LayoutCache,
     pub should_quit: bool,
+    pub activity: ActivityState,
     /// True when `github::build_client` produced a client — i.e. grove
     /// could see a `GITHUB_TOKEN`/`GH_TOKEN` env var or a logged-in
     /// `gh` CLI.  Set by `main.rs` right after token discovery.
@@ -372,6 +374,8 @@ impl AppState {
         } else {
             Some(SidebarCursor::Repo(0))
         };
+        let mut activity = ActivityState::default();
+        activity.resize_repos(repos.len());
         let has_github_repo = any_github_remote(&repos);
         Ok(Self {
             config,
@@ -388,6 +392,7 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity,
             github_authenticated: false,
             has_github_repo,
         })
@@ -1170,6 +1175,7 @@ impl AppState {
             base_branch,
             worktrees,
         });
+        self.activity.resize_repos(self.repos.len());
         self.has_github_repo = any_github_remote(&self.repos);
         let new_idx = self.repos.len() - 1;
         self.ui.cursor = Some(SidebarCursor::Repo(new_idx));
@@ -1189,6 +1195,13 @@ impl AppState {
 
         let path_key = self.repos[idx].root_path.to_string_lossy().into_owned();
         self.repos.remove(idx);
+        // Shift the activity scheduler's last-fetched timeline so subsequent
+        // repos keep their timestamps.  Repos at and after `idx` slide left by
+        // one; the tail becomes `None` via `resize_repos`.
+        if idx < self.activity.last_fetched_at.len() {
+            self.activity.last_fetched_at.remove(idx);
+        }
+        self.activity.resize_repos(self.repos.len());
         self.has_github_repo = any_github_remote(&self.repos);
         self.ui.expanded.remove(&path_key);
         self.ui.active_worktree = self.ui.active_worktree.take().filter(|id| id.repo != name);
@@ -1624,6 +1637,11 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity: {
+                let mut a = ActivityState::default();
+                a.resize_repos(2);
+                a
+            },
             github_authenticated: false,
             has_github_repo: false,
         };
@@ -1644,6 +1662,7 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity: ActivityState::default(),
             github_authenticated: false,
             has_github_repo: false,
         }

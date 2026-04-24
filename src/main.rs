@@ -1,3 +1,4 @@
+mod activity;
 mod app;
 mod async_evt;
 mod config;
@@ -163,6 +164,10 @@ async fn run_cli() -> Result<ExitCode> {
     async_evt::spawn_terminal_reader(tx.clone());
     let _watchers = spawn_watchers(&app, &tx);
     refresh_all_statuses(&app, &tx);
+    // Kick off an initial fetch for every configured repo so the branch
+    // lists and origin/HEAD that modals read from are warm within a few
+    // seconds of startup (instead of 5 minutes from now).
+    tick_fetch_scheduler(&mut app, &tx);
 
     // Apply the dispatch now that the TUI is up.  For Scan we spawn the
     // scan task; the modal starts in "scanning" state and populates when
@@ -218,6 +223,7 @@ async fn run(
                 if let Some(client) = &gh_client {
                     poll_github_prs(app, &tx, client);
                 }
+                tick_fetch_scheduler(app, &tx);
                 continue;
             }
         };
@@ -275,6 +281,21 @@ fn dispatch_event(event: Event, app: &mut AppState, tx: &EventSender) -> bool {
         Event::PrStatusReady(id, pr) => {
             app.set_worktree_pr(id, pr);
         }
+        Event::FetchFinished(repo_idx, ok) => {
+            if ok {
+                if let Some(slot) = app.activity.last_fetched_at.get_mut(repo_idx) {
+                    *slot = Some(std::time::Instant::now());
+                }
+                // The fetch may have produced new commits on the base branch,
+                // new remote branches, or pruned gone refs.  Refresh the
+                // status badges for the repo so the sidebar reflects any
+                // ahead/behind change immediately.
+                refresh_repo_statuses(repo_idx, app, tx);
+            }
+        }
+        Event::ActivityFinished(id) => {
+            app.activity.finish(id);
+        }
         Event::ScanCompleted(paths) => {
             app.update(AppMessage::ScanReady(paths));
         }
@@ -283,6 +304,29 @@ fn dispatch_event(event: Event, app: &mut AppState, tx: &EventSender) -> bool {
         }
     }
     true
+}
+
+/// Schedule any repo whose last fetch is older than `fetch_cadence_secs`
+/// (or never ran this session).  Repos with a fetch already in flight are
+/// skipped.
+fn tick_fetch_scheduler(app: &mut AppState, tx: &EventSender) {
+    let cadence_secs = app.config.general.fetch_cadence_secs;
+    if cadence_secs == 0 {
+        return;
+    }
+    let cadence = std::time::Duration::from_secs(cadence_secs);
+    for idx in app.activity.due_for_fetch(cadence) {
+        let Some(repo) = app.repos.get(idx) else {
+            continue;
+        };
+        let label = format!("fetching {}", repo.name);
+        let id = app.activity.start(
+            crate::activity::ActivityKind::Fetch,
+            crate::activity::ActivityScope::Repo(idx),
+            label,
+        );
+        async_evt::spawn_fetch(idx, repo.root_path.clone(), tx.clone(), id);
+    }
 }
 
 fn draw(tui: &mut Tui, app: &mut AppState) -> Result<PtySize> {
@@ -766,7 +810,7 @@ fn poll_github_prs(app: &AppState, tx: &EventSender, client: &std::sync::Arc<oct
 fn refresh_all_statuses(app: &AppState, tx: &EventSender) {
     for (r, repo) in app.repos.iter().enumerate() {
         for (w, wt) in repo.worktrees.iter().enumerate() {
-            async_evt::spawn_status_refresh((r, w), wt.path.clone(), tx.clone());
+            async_evt::spawn_status_refresh((r, w), wt.path.clone(), tx.clone(), None);
         }
     }
 }
@@ -783,7 +827,7 @@ fn refresh_diff_for_active(app: &AppState, tx: &EventSender) {
     };
     let mode = app.active_diff_mode();
     let base = repo.base_branch.clone();
-    async_evt::spawn_diff_refresh(id, wt.path.clone(), mode, base, tx.clone());
+    async_evt::spawn_diff_refresh(id, wt.path.clone(), mode, base, tx.clone(), None);
 }
 
 fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
@@ -820,6 +864,7 @@ fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
             crate::app::DiffMode::Local,
             base,
             tx.clone(),
+            None,
         );
     }
 }
@@ -829,7 +874,7 @@ fn refresh_repo_statuses(repo_idx: usize, app: &AppState, tx: &EventSender) {
         return;
     };
     for (w, wt) in repo.worktrees.iter().enumerate() {
-        async_evt::spawn_status_refresh((repo_idx, w), wt.path.clone(), tx.clone());
+        async_evt::spawn_status_refresh((repo_idx, w), wt.path.clone(), tx.clone(), None);
     }
 }
 
