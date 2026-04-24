@@ -1,3 +1,4 @@
+mod activity;
 mod app;
 mod async_evt;
 mod config;
@@ -41,9 +42,59 @@ enum InputAction {
     Noop,
 }
 
+/// Decision from inspecting the positional `grove [<path>]` argument.
+enum PathDispatch {
+    /// The target is a git repo (added to config if it wasn't already).
+    /// The sidebar cursor has been moved onto it; no modal needed.
+    OpenedRepo,
+    /// The target is a directory that may contain several git repos; a
+    /// scan has been scheduled and the TUI should open the
+    /// `DiscoveredRepos` modal while it runs.
+    Scan { root: PathBuf },
+}
+
+/// Expand `path`, decide whether it is a repo-to-open or a directory-to-scan,
+/// and (in the first case) update config + cursor so the TUI opens on the
+/// right worktree.  Errors are surfaced to the user via the normal CLI error
+/// path so the TUI never starts with a mysterious empty state.
+fn resolve_path_dispatch(path: &std::path::Path, app: &mut AppState) -> Result<PathDispatch> {
+    let absolute = app::expand_path(path)?;
+    if !absolute.exists() {
+        anyhow::bail!("no such path: {}", absolute.display());
+    }
+    if !absolute.is_dir() {
+        anyhow::bail!("not a directory: {}", absolute.display());
+    }
+    if git::is_git_repo(&absolute) {
+        if let Some(idx) = app.repos.iter().position(|r| r.root_path == absolute) {
+            app.ui.cursor = Some(app::SidebarCursor::Repo(idx));
+        } else {
+            // Adding the repo saves to disk and moves the sidebar cursor
+            // onto the new repo.  Errors bubble up to the CLI.
+            app.try_add_repo(&absolute.display().to_string())?;
+        }
+        return Ok(PathDispatch::OpenedRepo);
+    }
+    Ok(PathDispatch::Scan { root: absolute })
+}
+
 #[derive(Parser)]
 #[command(name = "grove", version, about)]
 struct Cli {
+    /// A repo to open, or a directory to scan for repos.
+    ///
+    /// Plain `grove` opens the configured sidebar.  `grove .` or
+    /// `grove ~/project` opens on a single repo (and adds it to the
+    /// config if it isn't already there).  `grove ~/dev` walks one
+    /// level looking for git repos and opens a picker listing what it
+    /// found.
+    #[arg(value_name = "PATH")]
+    path: Option<PathBuf>,
+
+    /// How deep `grove <dir>` descends when scanning for repos.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    depth: u8,
+
     /// Override config file path
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
@@ -95,6 +146,17 @@ async fn run_cli() -> Result<ExitCode> {
         app.apply_persisted(persisted);
     }
 
+    // `grove <path>` dispatches before entering the TUI so the single-repo
+    // case can silently mutate the config and set an initial cursor; the
+    // multi-repo case opens the TUI with a discovery modal already in
+    // place.  Resolve to a `PathDispatch` here so the TUI launch path is
+    // the same as the bare `grove` case.
+    let dispatch = if let Some(p) = cli.path.clone() {
+        Some(resolve_path_dispatch(&p, &mut app)?)
+    } else {
+        None
+    };
+
     install_panic_hook();
     let mut tui = init_terminal()?;
 
@@ -102,8 +164,28 @@ async fn run_cli() -> Result<ExitCode> {
     async_evt::spawn_terminal_reader(tx.clone());
     let _watchers = spawn_watchers(&app, &tx);
     refresh_all_statuses(&app, &tx);
+    // Kick off an initial fetch for every configured repo so the branch
+    // lists and origin/HEAD that modals read from are warm within a few
+    // seconds of startup (instead of 5 minutes from now).
+    tick_fetch_scheduler(&mut app, &tx);
+
+    // Apply the dispatch now that the TUI is up.  For Scan we spawn the
+    // scan task; the modal starts in "scanning" state and populates when
+    // `Event::ScanCompleted` arrives.
+    if let Some(d) = dispatch {
+        match d {
+            PathDispatch::OpenedRepo => {}
+            PathDispatch::Scan { root } => {
+                app.ui.modal = Some(crate::app::Modal::DiscoveredRepos(
+                    crate::app::DiscoveredReposModal::scanning(root.clone()),
+                ));
+                async_evt::spawn_scan(root, cli.depth, tx.clone());
+            }
+        }
+    }
 
     let gh_client = github::build_client();
+    app.github_authenticated = gh_client.is_some();
     if let Some(client) = &gh_client {
         poll_github_prs(&app, &tx, client);
     }
@@ -141,6 +223,7 @@ async fn run(
                 if let Some(client) = &gh_client {
                     poll_github_prs(app, &tx, client);
                 }
+                tick_fetch_scheduler(app, &tx);
                 continue;
             }
         };
@@ -198,11 +281,52 @@ fn dispatch_event(event: Event, app: &mut AppState, tx: &EventSender) -> bool {
         Event::PrStatusReady(id, pr) => {
             app.set_worktree_pr(id, pr);
         }
+        Event::FetchFinished(repo_idx, ok) => {
+            if ok {
+                if let Some(slot) = app.activity.last_fetched_at.get_mut(repo_idx) {
+                    *slot = Some(std::time::Instant::now());
+                }
+                // The fetch may have produced new commits on the base branch,
+                // new remote branches, or pruned gone refs.  Refresh the
+                // status badges for the repo so the sidebar reflects any
+                // ahead/behind change immediately.
+                refresh_repo_statuses(repo_idx, app, tx);
+            }
+        }
+        Event::ActivityFinished(id) => {
+            app.activity.finish(id);
+        }
+        Event::ScanCompleted(paths) => {
+            app.update(AppMessage::ScanReady(paths));
+        }
         Event::TerminalOutput => {
             // Parser advanced; next draw picks it up.
         }
     }
     true
+}
+
+/// Schedule any repo whose last fetch is older than `fetch_cadence_secs`
+/// (or never ran this session).  Repos with a fetch already in flight are
+/// skipped.
+fn tick_fetch_scheduler(app: &mut AppState, tx: &EventSender) {
+    let cadence_secs = app.config.general.fetch_cadence_secs;
+    if cadence_secs == 0 {
+        return;
+    }
+    let cadence = std::time::Duration::from_secs(cadence_secs);
+    for idx in app.activity.due_for_fetch(cadence) {
+        let Some(repo) = app.repos.get(idx) else {
+            continue;
+        };
+        let label = format!("fetching {}", repo.name);
+        let id = app.activity.start(
+            crate::activity::ActivityKind::Fetch,
+            crate::activity::ActivityScope::Repo(idx),
+            label,
+        );
+        async_evt::spawn_fetch(idx, repo.root_path.clone(), tx.clone(), id);
+    }
 }
 
 fn draw(tui: &mut Tui, app: &mut AppState) -> Result<PtySize> {
@@ -523,6 +647,7 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
             Modal::Help => help_keys(key),
             Modal::AddRepo(_) => add_repo_keys(key),
             Modal::NewWorktree(m) => new_worktree_keys(key, m),
+            Modal::DiscoveredRepos(_) => discovered_keys(key),
             Modal::ConfirmRemoveRepo { .. }
             | Modal::ConfirmRemoveWorktree { .. }
             | Modal::ConfirmDeleteBranch { .. }
@@ -685,7 +810,7 @@ fn poll_github_prs(app: &AppState, tx: &EventSender, client: &std::sync::Arc<oct
 fn refresh_all_statuses(app: &AppState, tx: &EventSender) {
     for (r, repo) in app.repos.iter().enumerate() {
         for (w, wt) in repo.worktrees.iter().enumerate() {
-            async_evt::spawn_status_refresh((r, w), wt.path.clone(), tx.clone());
+            async_evt::spawn_status_refresh((r, w), wt.path.clone(), tx.clone(), None);
         }
     }
 }
@@ -702,7 +827,7 @@ fn refresh_diff_for_active(app: &AppState, tx: &EventSender) {
     };
     let mode = app.active_diff_mode();
     let base = repo.base_branch.clone();
-    async_evt::spawn_diff_refresh(id, wt.path.clone(), mode, base, tx.clone());
+    async_evt::spawn_diff_refresh(id, wt.path.clone(), mode, base, tx.clone(), None);
 }
 
 fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
@@ -739,6 +864,7 @@ fn run_stage(app: &mut AppState, tx: &EventSender, staging: bool) {
             crate::app::DiffMode::Local,
             base,
             tx.clone(),
+            None,
         );
     }
 }
@@ -748,7 +874,7 @@ fn refresh_repo_statuses(repo_idx: usize, app: &AppState, tx: &EventSender) {
         return;
     };
     for (w, wt) in repo.worktrees.iter().enumerate() {
-        async_evt::spawn_status_refresh((repo_idx, w), wt.path.clone(), tx.clone());
+        async_evt::spawn_status_refresh((repo_idx, w), wt.path.clone(), tx.clone(), None);
     }
 }
 
@@ -832,6 +958,17 @@ fn confirm_keys(key: KeyEvent) -> AppMessage {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => AppMessage::SubmitModal,
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => AppMessage::CloseModal,
+        _ => AppMessage::NoOp,
+    }
+}
+
+fn discovered_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Esc => AppMessage::CloseModal,
+        KeyCode::Enter => AppMessage::SubmitModal,
+        KeyCode::Char(' ') => AppMessage::ToggleDiscoveredSelection,
+        KeyCode::Char('j') | KeyCode::Down => AppMessage::DiscoveredCursorDown,
+        KeyCode::Char('k') | KeyCode::Up => AppMessage::DiscoveredCursorUp,
         _ => AppMessage::NoOp,
     }
 }

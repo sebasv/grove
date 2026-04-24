@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::activity::ActivityState;
 use crate::async_evt::WorktreeId;
 use crate::config::{Config, RepoConfig};
 use crate::git;
@@ -23,6 +24,16 @@ pub struct AppState {
     pub theme_name: crate::theme::ThemeName,
     pub layout: LayoutCache,
     pub should_quit: bool,
+    pub activity: ActivityState,
+    /// True when `github::build_client` produced a client — i.e. grove
+    /// could see a `GITHUB_TOKEN`/`GH_TOKEN` env var or a logged-in
+    /// `gh` CLI.  Set by `main.rs` right after token discovery.
+    pub github_authenticated: bool,
+    /// True when at least one configured repo has a recognised GitHub
+    /// `origin` remote.  The sidebar shows an "auth" warning iff this
+    /// is true and `github_authenticated` is false.  Cached to avoid
+    /// shelling out to `git remote` on every render.
+    pub has_github_repo: bool,
 }
 
 /// Cached rects from the most recent `ui::render` pass.  Used by mouse
@@ -206,6 +217,38 @@ pub enum Modal {
         branch: String,
         repo_root: PathBuf,
     },
+    /// Results of a `grove <dir>` scan waiting for the user to pick
+    /// which repos to add.
+    DiscoveredRepos(DiscoveredReposModal),
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveredReposModal {
+    pub scan_root: PathBuf,
+    pub scanning: bool,
+    pub candidates: Vec<DiscoveredRepo>,
+    pub cursor: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveredRepo {
+    pub path: PathBuf,
+    pub name: String,
+    pub already_configured: bool,
+    pub selected: bool,
+}
+
+impl DiscoveredReposModal {
+    pub fn scanning(root: PathBuf) -> Self {
+        Self {
+            scan_root: root,
+            scanning: true,
+            candidates: Vec::new(),
+            cursor: 0,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -342,6 +385,12 @@ pub enum AppMessage {
     CompletionAccept,
     HelpScrollUp,
     HelpScrollDown,
+    /// A `grove <dir>` scan finished; populate the DiscoveredRepos modal.
+    ScanReady(Vec<PathBuf>),
+    /// Toggle the selection flag for the candidate under the cursor.
+    ToggleDiscoveredSelection,
+    DiscoveredCursorUp,
+    DiscoveredCursorDown,
     Quit,
     NoOp,
 }
@@ -364,6 +413,9 @@ impl AppState {
         } else {
             Some(SidebarCursor::Repo(0))
         };
+        let mut activity = ActivityState::default();
+        activity.resize_repos(repos.len());
+        let has_github_repo = any_github_remote(&repos);
         Ok(Self {
             config,
             config_path,
@@ -379,6 +431,9 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity,
+            github_authenticated: false,
+            has_github_repo,
         })
     }
 
@@ -429,6 +484,13 @@ impl AppState {
             AppMessage::CycleTheme => {
                 self.theme_name = self.theme_name.next();
                 self.theme = crate::theme::resolve(self.theme_name);
+                // Persist immediately so the choice survives restarts.
+                // Best-effort: failures go to the log rather than killing
+                // the TUI (config could be read-only, disk full, etc.).
+                self.config.theme.base = self.theme_name;
+                if let Err(err) = self.config.save(&self.config_path) {
+                    eprintln!("warning: failed to persist theme: {err:#}");
+                }
             }
             AppMessage::BranchCursorUp => {
                 if let Some(Modal::NewWorktree(m)) = &mut self.ui.modal {
@@ -467,9 +529,70 @@ impl AppState {
             AppMessage::HelpScrollDown => {
                 self.ui.help_scroll = self.ui.help_scroll.saturating_add(1);
             }
+            AppMessage::ScanReady(paths) => self.apply_scan_results(paths),
+            AppMessage::ToggleDiscoveredSelection => self.toggle_discovered_selection(),
+            AppMessage::DiscoveredCursorUp => self.move_discovered_cursor(-1),
+            AppMessage::DiscoveredCursorDown => self.move_discovered_cursor(1),
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
         }
+    }
+
+    fn apply_scan_results(&mut self, paths: Vec<PathBuf>) {
+        let Some(Modal::DiscoveredRepos(m)) = &mut self.ui.modal else {
+            return;
+        };
+        // Config stores canonicalised paths (from `resolve_repo_path`).
+        // Canonicalise on both sides of the comparison so duplicate
+        // detection works regardless of which spelling the user typed.
+        let configured: std::collections::HashSet<PathBuf> = self
+            .config
+            .repos
+            .iter()
+            .map(|r| std::fs::canonicalize(&r.path).unwrap_or_else(|_| r.path.clone()))
+            .collect();
+        let candidates: Vec<DiscoveredRepo> = paths
+            .into_iter()
+            .map(|path| {
+                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                let already_configured = configured.contains(&canonical);
+                let name = canonical
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| canonical.display().to_string());
+                DiscoveredRepo {
+                    already_configured,
+                    selected: !already_configured,
+                    path: canonical,
+                    name,
+                }
+            })
+            .collect();
+        m.scanning = false;
+        m.cursor = 0;
+        m.candidates = candidates;
+    }
+
+    fn toggle_discovered_selection(&mut self) {
+        let Some(Modal::DiscoveredRepos(m)) = &mut self.ui.modal else {
+            return;
+        };
+        if let Some(c) = m.candidates.get_mut(m.cursor) {
+            c.selected = !c.selected;
+        }
+    }
+
+    fn move_discovered_cursor(&mut self, delta: i32) {
+        let Some(Modal::DiscoveredRepos(m)) = &mut self.ui.modal else {
+            return;
+        };
+        if m.candidates.is_empty() {
+            return;
+        }
+        let last = m.candidates.len() - 1;
+        let new = (m.cursor as i32 + delta).clamp(0, last as i32) as usize;
+        m.cursor = new;
     }
 
     fn toggle_diff_view(&mut self) {
@@ -761,10 +884,42 @@ impl AppState {
                     eprintln!("warning: failed to force-delete branch {branch}: {err:#}");
                 }
             }
+            Some(Modal::DiscoveredRepos(m)) => {
+                if m.scanning {
+                    // Scan still running; keep the modal open.
+                    self.ui.modal = Some(Modal::DiscoveredRepos(m));
+                    return;
+                }
+                if let Err(err) = self.add_discovered_repos(&m) {
+                    self.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal {
+                        error: Some(format!("{err:#}")),
+                        ..m
+                    }));
+                }
+            }
             other => {
                 self.ui.modal = other;
             }
         }
+    }
+
+    fn add_discovered_repos(&mut self, modal: &DiscoveredReposModal) -> Result<()> {
+        let mut added = 0usize;
+        for c in &modal.candidates {
+            if !c.selected || c.already_configured {
+                continue;
+            }
+            if let Err(err) = self.try_add_repo(&c.path.display().to_string()) {
+                anyhow::bail!(
+                    "failed to add {} ({}); stopped after {added} repo{plural}",
+                    c.path.display(),
+                    err,
+                    plural = if added == 1 { "" } else { "s" },
+                );
+            }
+            added += 1;
+        }
+        Ok(())
     }
 
     /// Resolve the effective worktree root for a repo: repo-level override wins
@@ -997,7 +1152,7 @@ impl AppState {
         Ok(())
     }
 
-    fn try_add_repo(&mut self, raw: &str) -> Result<()> {
+    pub fn try_add_repo(&mut self, raw: &str) -> Result<()> {
         if raw.is_empty() {
             anyhow::bail!("path cannot be empty");
         }
@@ -1019,24 +1174,35 @@ impl AppState {
         let worktrees = git::list_worktrees(&path)
             .with_context(|| format!("discovering worktrees in {}", path.display()))?;
 
+        // Resolve the repo's default branch from `origin/HEAD` if it's
+        // already been fetched. Falling back to `general.default_base_branch`
+        // when the remote hasn't been fetched yet means grove hands a repo
+        // that uses `master` (or `develop`, or …) the wrong base on first
+        // add; reading `origin/HEAD` avoids that for the common case.
+        let detected = git::detect_default_branch(&path);
+        let base_branch = detected
+            .clone()
+            .unwrap_or_else(|| self.config.general.default_base_branch.clone());
+
         // Persist to disk first — only commit to in-memory state after save succeeds.
         let mut new_config = self.config.clone();
         new_config.repos.push(RepoConfig {
             name: name.clone(),
             path: path.clone(),
-            base_branch: None,
+            base_branch: detected,
             worktree_root: None,
         });
         new_config.save(&self.config_path)?;
         self.config = new_config;
 
-        let base_branch = self.config.general.default_base_branch.clone();
         self.repos.push(Repo {
             name,
             root_path: path,
             base_branch,
             worktrees,
         });
+        self.activity.resize_repos(self.repos.len());
+        self.has_github_repo = any_github_remote(&self.repos);
         let new_idx = self.repos.len() - 1;
         self.ui.cursor = Some(SidebarCursor::Repo(new_idx));
         Ok(())
@@ -1055,6 +1221,14 @@ impl AppState {
 
         let path_key = self.repos[idx].root_path.to_string_lossy().into_owned();
         self.repos.remove(idx);
+        // Shift the activity scheduler's last-fetched timeline so subsequent
+        // repos keep their timestamps.  Repos at and after `idx` slide left by
+        // one; the tail becomes `None` via `resize_repos`.
+        if idx < self.activity.last_fetched_at.len() {
+            self.activity.last_fetched_at.remove(idx);
+        }
+        self.activity.resize_repos(self.repos.len());
+        self.has_github_repo = any_github_remote(&self.repos);
         self.ui.expanded.remove(&path_key);
         self.ui.active_worktree = self.ui.active_worktree.take().filter(|id| id.repo != name);
 
@@ -1284,7 +1458,7 @@ impl AppState {
 }
 
 /// Expand `~` and resolve relative paths without requiring the path to exist.
-fn expand_path(raw: &std::path::Path) -> Result<PathBuf> {
+pub fn expand_path(raw: &std::path::Path) -> Result<PathBuf> {
     let s = raw.to_string_lossy();
     let expanded = if s == "~" {
         home_dir()?
@@ -1390,6 +1564,14 @@ fn random_slug() -> String {
     format!("{:06x}", n & 0x00ff_ffff)
 }
 
+/// Does at least one repo have a GitHub `origin` remote?  Used to decide
+/// whether the "not authenticated" footer is actionable for this user.
+pub fn any_github_remote(repos: &[Repo]) -> bool {
+    repos
+        .iter()
+        .any(|r| crate::github::discover_owner_repo(&r.root_path).is_some())
+}
+
 fn load_repos(config: &Config) -> Vec<Repo> {
     let mut repos = Vec::with_capacity(config.repos.len());
     for repo_cfg in &config.repos {
@@ -1481,6 +1663,13 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity: {
+                let mut a = ActivityState::default();
+                a.resize_repos(2);
+                a
+            },
+            github_authenticated: false,
+            has_github_repo: false,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
         state
@@ -1499,6 +1688,9 @@ impl AppState {
             theme_name: crate::theme::ThemeName::default(),
             layout: LayoutCache::default(),
             should_quit: false,
+            activity: ActivityState::default(),
+            github_authenticated: false,
+            has_github_repo: false,
         }
     }
 }
@@ -2062,5 +2254,182 @@ mod tests {
         m.cursor = 2; // "feat/x" (row 1 is main, row 2 is feat/x)
         let got = m.selected_branch().unwrap();
         assert_eq!(got.name, "feat/x");
+    }
+
+    #[test]
+    fn cycle_theme_persists_to_disk() {
+        let tmp = temp_dir();
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path.clone());
+        assert_eq!(app.theme_name, crate::theme::ThemeName::default());
+
+        app.update(AppMessage::CycleTheme);
+        let after = app.theme_name;
+        assert_ne!(after, crate::theme::ThemeName::default());
+        assert!(config_path.exists(), "config file should have been written");
+
+        let reloaded = crate::config::Config::load(&config_path).unwrap();
+        assert_eq!(reloaded.theme.base, after);
+    }
+
+    #[test]
+    fn try_add_repo_auto_detects_base_branch_from_origin_head() {
+        let tmp = temp_dir();
+        let bare = tmp.join("remote.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["init", "--bare", "--quiet", "--initial-branch=develop"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let local = tmp.join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&local)
+            .args(["init", "--quiet", "--initial-branch=develop"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        run_git(
+            &local,
+            &["remote", "add", "origin", &bare.display().to_string()],
+        );
+        std::fs::write(local.join("a.txt"), "a").unwrap();
+        run_git(&local, &["add", "."]);
+        run_git(
+            &local,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "init",
+                "--quiet",
+            ],
+        );
+        run_git(&local, &["push", "--quiet", "-u", "origin", "develop"]);
+        // Set origin/HEAD so detect_default_branch picks it up.
+        run_git(&local, &["remote", "set-head", "origin", "--auto"]);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.try_add_repo(local.to_str().unwrap()).unwrap();
+        assert_eq!(app.repos.len(), 1);
+        assert_eq!(app.repos[0].base_branch, "develop");
+        assert_eq!(
+            app.config.repos[0].base_branch.as_deref(),
+            Some("develop"),
+            "persisted config should carry the detected base branch"
+        );
+    }
+
+    #[test]
+    fn try_add_repo_falls_back_to_default_when_no_origin_head() {
+        let tmp = temp_dir();
+        let repo = tmp.join("local");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.try_add_repo(repo.to_str().unwrap()).unwrap();
+        assert_eq!(app.repos[0].base_branch, "main");
+        // Detected base is None → config stays null so the general default
+        // can still override later.
+        assert!(app.config.repos[0].base_branch.is_none());
+    }
+
+    fn make_scanning_modal(root: PathBuf) -> AppState {
+        let config_path = PathBuf::from("/tmp/grove-scan-test-config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal::scanning(root)));
+        app
+    }
+
+    #[test]
+    fn apply_scan_results_marks_already_configured() {
+        let tmp = temp_dir();
+        let existing = tmp.join("existing");
+        let fresh = tmp.join("fresh");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        init_git_repo(&existing);
+        init_git_repo(&fresh);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.try_add_repo(existing.to_str().unwrap()).unwrap();
+        app.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal::scanning(
+            tmp.clone(),
+        )));
+
+        app.update(AppMessage::ScanReady(vec![existing.clone(), fresh.clone()]));
+
+        let Some(Modal::DiscoveredRepos(m)) = &app.ui.modal else {
+            panic!("expected DiscoveredRepos");
+        };
+        assert!(!m.scanning);
+        assert_eq!(m.candidates.len(), 2);
+        // Candidates are stored in canonical form; look them up the same way.
+        let canonical_existing = std::fs::canonicalize(&existing).unwrap();
+        let canonical_fresh = std::fs::canonicalize(&fresh).unwrap();
+        let by_path: std::collections::HashMap<_, _> =
+            m.candidates.iter().map(|c| (c.path.clone(), c)).collect();
+        assert!(by_path[&canonical_existing].already_configured);
+        assert!(!by_path[&canonical_existing].selected);
+        assert!(!by_path[&canonical_fresh].already_configured);
+        assert!(by_path[&canonical_fresh].selected);
+    }
+
+    #[test]
+    fn toggle_discovered_selection_flips_cursor_row() {
+        let mut app = make_scanning_modal(PathBuf::from("/tmp"));
+        app.update(AppMessage::ScanReady(vec![
+            PathBuf::from("/tmp/a"),
+            PathBuf::from("/tmp/b"),
+        ]));
+        app.update(AppMessage::DiscoveredCursorDown);
+        app.update(AppMessage::ToggleDiscoveredSelection);
+        let Some(Modal::DiscoveredRepos(m)) = &app.ui.modal else {
+            unreachable!()
+        };
+        assert!(m.candidates[0].selected); // default-on, untouched
+        assert!(!m.candidates[1].selected); // was on (not configured), now off
+    }
+
+    #[test]
+    fn submit_discovered_adds_only_selected_and_new_candidates() {
+        let tmp = temp_dir();
+        let a = tmp.join("a");
+        let b = tmp.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        init_git_repo(&a);
+        init_git_repo(&b);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal::scanning(
+            tmp.clone(),
+        )));
+        app.update(AppMessage::ScanReady(vec![a.clone(), b.clone()]));
+
+        // Deselect `b`.
+        app.update(AppMessage::DiscoveredCursorDown);
+        app.update(AppMessage::ToggleDiscoveredSelection);
+
+        app.update(AppMessage::SubmitModal);
+        assert_eq!(app.repos.len(), 1);
+        // Both the stored repo and the test's `a` path go through the
+        // same canonicalisation, so comparing canonical forms is robust
+        // to macOS /private/var symlink expansion.
+        let canonical_a = std::fs::canonicalize(&a).unwrap();
+        assert_eq!(app.repos[0].root_path, canonical_a);
     }
 }

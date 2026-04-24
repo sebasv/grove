@@ -74,6 +74,33 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     lines.push(Line::from(" ?    help"));
     lines.push(Line::from(" q    quit"));
 
+    // Surface missing GitHub auth when at least one repo has a GitHub
+    // origin — otherwise the user gets silently-empty PR badges and
+    // assumes grove's integration is broken.
+    if !app.github_authenticated && app.has_github_repo {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            " ⚠ PRs: not authenticated",
+            Style::default().fg(app.theme.warn),
+        ));
+        lines.push(Line::styled(
+            "   ? for setup",
+            Style::default().fg(app.theme.dim),
+        ));
+    }
+
+    // Activity footer — last row of the sidebar.  Shows any background
+    // tasks in flight so the user understands why a badge or list is
+    // about to change.  Idle state is blank.
+    let summary = app.activity.summary();
+    let footer = if summary.is_empty() {
+        Line::from("")
+    } else {
+        Line::styled(format!(" {summary}"), Style::default().fg(app.theme.dim))
+    };
+    lines.push(Line::from(""));
+    lines.push(footer);
+
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -228,5 +255,82 @@ mod tests {
             ..WorktreeStatus::default()
         });
         insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn footer_is_blank_when_activity_is_idle() {
+        let app = AppState::fixture();
+        // Render with a smaller canvas that actually cuts at the footer
+        // rows; otherwise the visible area has trailing blanks that hide
+        // the test intent.
+        let backend = TestBackend::new(40, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &app))
+            .unwrap();
+        let output = terminal.backend().to_string();
+        // Idle activity → summary is empty → no ⟳ glyph anywhere.
+        assert!(!output.contains("⟳"));
+    }
+
+    #[test]
+    fn footer_shows_fetch_summary_when_active() {
+        use crate::activity::{ActivityKind, ActivityScope};
+        let mut app = AppState::fixture();
+        app.activity.start(
+            ActivityKind::Fetch,
+            ActivityScope::Repo(0),
+            "fetching grove",
+        );
+        let backend = TestBackend::new(40, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &app))
+            .unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("⟳ fetching grove"),
+            "expected fetch summary in sidebar:\n{output}"
+        );
+    }
+
+    fn render_at_size(app: &AppState, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), app))
+            .unwrap();
+        terminal.backend().to_string()
+    }
+
+    #[test]
+    fn auth_warning_appears_when_unauthenticated_and_github_remote_present() {
+        let mut app = AppState::fixture();
+        app.github_authenticated = false;
+        app.has_github_repo = true;
+        let out = render_at_size(&app, 40, 30);
+        assert!(
+            out.contains("⚠ PRs: not authenticated"),
+            "expected auth warning in sidebar:\n{out}"
+        );
+        assert!(out.contains("? for setup"));
+    }
+
+    #[test]
+    fn auth_warning_hidden_when_authenticated() {
+        let mut app = AppState::fixture();
+        app.github_authenticated = true;
+        app.has_github_repo = true;
+        let out = render_at_size(&app, 40, 30);
+        assert!(!out.contains("not authenticated"));
+    }
+
+    #[test]
+    fn auth_warning_hidden_without_github_repo() {
+        let mut app = AppState::fixture();
+        app.github_authenticated = false;
+        app.has_github_repo = false;
+        let out = render_at_size(&app, 40, 30);
+        assert!(!out.contains("not authenticated"));
     }
 }

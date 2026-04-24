@@ -5,9 +5,10 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 
 use crate::app::{AddRepoModal, NewWorktreeModal};
+use crate::theme::Theme;
 use crate::ui::{centered_rect, text_input};
 
-pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal) {
+pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal, theme: &Theme) {
     let n = modal.completions.len().min(10);
     let height = if n == 0 { 11u16 } else { 11 + n as u16 + 1 };
     let modal_area = centered_rect(62, height, area);
@@ -39,10 +40,10 @@ pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal) {
 
     let input_area = Rect {
         x: rows[2].x + 2,
-        width: rows[2].width.saturating_sub(2),
+        width: rows[2].width.saturating_sub(4),
         ..rows[2]
     };
-    text_input::render(frame, input_area, &modal.input);
+    text_input::render(frame, input_area, &modal.input, theme.input_bg_focused);
 
     let base_row = if n > 0 {
         // rows[3] = separator line, rows[4] = completions list
@@ -97,6 +98,7 @@ pub fn render_new_worktree(
     area: Rect,
     modal: &NewWorktreeModal,
     repo_name: &str,
+    theme: &Theme,
 ) {
     let visible = 10usize;
     // input (1) + blank (1) + list (visible) + blank (1) + error (1) + blank (1) + hint (1) + padding
@@ -126,10 +128,10 @@ pub fn render_new_worktree(
 
     let input_area = Rect {
         x: rows[2].x + 2,
-        width: rows[2].width.saturating_sub(2),
+        width: rows[2].width.saturating_sub(4),
         ..rows[2]
     };
-    text_input::render(frame, input_area, &modal.input);
+    text_input::render(frame, input_area, &modal.input, theme.input_bg_focused);
 
     frame.render_widget(
         Paragraph::new(Line::styled(

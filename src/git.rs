@@ -278,6 +278,83 @@ pub fn is_git_repo(path: &Path) -> bool {
     Repository::open(path).is_ok()
 }
 
+/// Resolve `origin/HEAD` to a branch name, e.g. `"main"` or `"master"`.
+/// Returns `None` when the remote has never been fetched, `origin/HEAD`
+/// was not set by the remote, or the repo has no `origin` at all.
+///
+/// Reads `refs/remotes/origin/HEAD` via libgit2 — no network access.
+pub fn detect_default_branch(repo_root: &Path) -> Option<String> {
+    let repo = Repository::open(repo_root).ok()?;
+    let reference = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
+    // `origin/HEAD` is a symbolic reference pointing at something like
+    // `refs/remotes/origin/main`.  The last path segment is the branch
+    // name we want.
+    let target = reference.symbolic_target()?.to_string();
+    target.rsplit('/').next().map(str::to_string)
+}
+
+/// Walk `root` up to `depth` levels deep looking for git repositories.
+/// Returns the absolute paths of each repo root in sorted order.
+///
+/// A "git repository" here is any directory that contains a `.git` entry
+/// directly, or is a bare repository (has `HEAD` + `config` at the top
+/// level).  Using a strict directory-local check — rather than libgit2's
+/// upward-searching `Repository::open` — keeps the walker predictable
+/// when a scan root lives inside another repo.
+///
+/// Skips hidden directories (except `.git` itself), and does not recurse
+/// into directories named `node_modules`, `target`, `.venv` or similar
+/// build / cache dirs to keep scans of large home directories fast.
+pub fn discover_repos(root: &Path, depth: u8) -> Vec<PathBuf> {
+    fn skip(name: &str) -> bool {
+        matches!(
+            name,
+            "node_modules" | "target" | ".venv" | "venv" | "__pycache__" | "dist" | "build"
+        )
+    }
+
+    let mut found = Vec::new();
+    let mut stack: Vec<(PathBuf, u8)> = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, level)) = stack.pop() {
+        if looks_like_repo_root(&dir) {
+            found.push(dir);
+            continue; // don't descend into a repo
+        }
+        if level >= depth {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') && name != ".git" {
+                continue;
+            }
+            if skip(name) {
+                continue;
+            }
+            stack.push((path, level + 1));
+        }
+    }
+    found.sort();
+    found
+}
+
+fn looks_like_repo_root(path: &Path) -> bool {
+    if path.join(".git").exists() {
+        return true;
+    }
+    // Bare repositories have HEAD + config at the top level.
+    path.join("HEAD").is_file() && path.join("config").is_file()
+}
+
 pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
     let repo = Repository::open(repo_root)
         .with_context(|| format!("opening repository at {}", repo_root.display()))?;
@@ -498,6 +575,16 @@ pub fn delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
 
 pub fn force_delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
     run_git_cmd(repo_root, &["branch", "-D", branch])
+}
+
+/// Shell out to `git fetch --all --prune` for `repo_root`.  Shelling
+/// out (rather than calling libgit2) lets the user's `~/.gitconfig` —
+/// `http.lowSpeedLimit`, proxy settings, SSH agent — drive the
+/// network layer, so a repo that works on the command line also works
+/// in grove.  The command inherits `stdout`/`stderr` from the caller
+/// but we only surface them on failure.
+pub fn fetch_remote(repo_root: &Path) -> Result<()> {
+    run_git_cmd(repo_root, &["fetch", "--all", "--prune", "--quiet"])
 }
 
 #[cfg(test)]
@@ -796,5 +883,82 @@ mod tests {
         let s = compute_status(&local).unwrap();
         assert_eq!(s.ahead, 1);
         assert_eq!(s.behind, 0);
+    }
+
+    #[test]
+    fn discover_repos_finds_git_dirs_at_depth_1() {
+        let dir = temp_dir();
+        // layout:
+        //   <dir>/a           (repo)
+        //   <dir>/b           (repo)
+        //   <dir>/not-a-repo  (plain dir)
+        //   <dir>/.hidden     (plain dir, skipped)
+        //   <dir>/c/d         (repo, below depth)
+        let a = dir.join("a");
+        let b = dir.join("b");
+        let plain = dir.join("not-a-repo");
+        let hidden = dir.join(".hidden");
+        let deep = dir.join("c").join("d");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::create_dir_all(&deep).unwrap();
+        init_repo(&a);
+        init_repo(&b);
+        init_repo(&deep);
+
+        let found = discover_repos(&dir, 1);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn discover_repos_respects_depth() {
+        let dir = temp_dir();
+        let deep = dir.join("outer").join("inner");
+        std::fs::create_dir_all(&deep).unwrap();
+        init_repo(&deep);
+
+        assert!(discover_repos(&dir, 1).is_empty());
+        let deeper = discover_repos(&dir, 2);
+        assert_eq!(deeper.len(), 1);
+        assert!(deeper[0].ends_with("outer/inner"));
+    }
+
+    #[test]
+    fn discover_repos_does_not_descend_into_a_repo() {
+        // Repo walker should halt at `outer` and never see its inner
+        // subdirectories — even if one of them also happens to look
+        // like a repo root.
+        let dir = temp_dir();
+        let outer = dir.join("outer");
+        std::fs::create_dir_all(&outer).unwrap();
+        init_repo(&outer);
+        // Create a sibling subdir that would be flagged as a bare-ish
+        // repo root on its own (HEAD + config).  The walker should not
+        // even look at it because we stop at `outer`.
+        let pretend = outer.join("pretend-repo");
+        std::fs::create_dir_all(&pretend).unwrap();
+        std::fs::write(pretend.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(pretend.join("config"), "").unwrap();
+
+        let found = discover_repos(&dir, 5);
+        assert_eq!(found.len(), 1, "only outer repo expected: {found:?}");
+        assert!(found[0].ends_with("outer"));
+    }
+
+    #[test]
+    fn discover_repos_path_is_itself_a_repo_ignored() {
+        // `discover_repos` is the *scan* path — handing it a repo returns
+        // just that repo (the dispatch layer in main.rs covers the
+        // single-repo case before calling this).
+        let dir = temp_dir();
+        init_repo(&dir);
+        let found = discover_repos(&dir, 1);
+        assert_eq!(found, vec![dir]);
     }
 }
