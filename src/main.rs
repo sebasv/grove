@@ -104,6 +104,7 @@ async fn run_cli() -> Result<ExitCode> {
     refresh_all_statuses(&app, &tx);
 
     let gh_client = github::build_client();
+    app.github_authenticated = gh_client.is_some();
     if let Some(client) = &gh_client {
         poll_github_prs(&app, &tx, client);
     }

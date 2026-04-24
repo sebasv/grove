@@ -74,6 +74,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     lines.push(Line::from(" ?    help"));
     lines.push(Line::from(" q    quit"));
 
+    // Surface missing GitHub auth when at least one repo has a GitHub
+    // origin — otherwise the user gets silently-empty PR badges and
+    // assumes grove's integration is broken.
+    if !app.github_authenticated && app.has_github_repo {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            " ⚠ PRs: not authenticated",
+            Style::default().fg(app.theme.warn),
+        ));
+        lines.push(Line::styled(
+            "   ? for setup",
+            Style::default().fg(app.theme.dim),
+        ));
+    }
+
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -228,5 +243,45 @@ mod tests {
             ..WorktreeStatus::default()
         });
         insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    fn render_at_size(app: &AppState, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), app))
+            .unwrap();
+        terminal.backend().to_string()
+    }
+
+    #[test]
+    fn auth_warning_appears_when_unauthenticated_and_github_remote_present() {
+        let mut app = AppState::fixture();
+        app.github_authenticated = false;
+        app.has_github_repo = true;
+        let out = render_at_size(&app, 40, 30);
+        assert!(
+            out.contains("⚠ PRs: not authenticated"),
+            "expected auth warning in sidebar:\n{out}"
+        );
+        assert!(out.contains("? for setup"));
+    }
+
+    #[test]
+    fn auth_warning_hidden_when_authenticated() {
+        let mut app = AppState::fixture();
+        app.github_authenticated = true;
+        app.has_github_repo = true;
+        let out = render_at_size(&app, 40, 30);
+        assert!(!out.contains("not authenticated"));
+    }
+
+    #[test]
+    fn auth_warning_hidden_without_github_repo() {
+        let mut app = AppState::fixture();
+        app.github_authenticated = false;
+        app.has_github_repo = false;
+        let out = render_at_size(&app, 40, 30);
+        assert!(!out.contains("not authenticated"));
     }
 }
