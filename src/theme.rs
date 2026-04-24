@@ -29,8 +29,8 @@ impl Default for Theme {
             success: Color::Green,
             warn: Color::Yellow,
             danger: Color::Red,
-            input_bg_focused: Color::Rgb(40, 44, 52),
-            input_bg: Color::Rgb(28, 30, 36),
+            input_bg_focused: Color::Rgb(62, 68, 81),
+            input_bg: Color::Rgb(40, 44, 52),
         }
     }
 }
@@ -63,8 +63,8 @@ pub fn resolve(name: ThemeName) -> Theme {
             success: Color::Rgb(158, 206, 106),
             warn: Color::Rgb(224, 175, 104),
             danger: Color::Rgb(247, 118, 142),
-            input_bg_focused: Color::Rgb(36, 40, 59),
-            input_bg: Color::Rgb(26, 29, 43),
+            input_bg_focused: Color::Rgb(65, 72, 104),
+            input_bg: Color::Rgb(41, 46, 66),
         },
         ThemeName::Gruvbox => Theme {
             accent: Color::Rgb(250, 189, 47),
@@ -72,8 +72,8 @@ pub fn resolve(name: ThemeName) -> Theme {
             success: Color::Rgb(184, 187, 38),
             warn: Color::Rgb(254, 128, 25),
             danger: Color::Rgb(251, 73, 52),
-            input_bg_focused: Color::Rgb(60, 56, 54),
-            input_bg: Color::Rgb(40, 40, 40),
+            input_bg_focused: Color::Rgb(80, 73, 69),
+            input_bg: Color::Rgb(60, 56, 54),
         },
     }
 }

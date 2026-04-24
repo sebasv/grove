@@ -40,7 +40,7 @@ pub fn render(frame: &mut Frame, area: Rect, modal: &AddRepoModal, theme: &Theme
 
     let input_area = Rect {
         x: rows[2].x + 2,
-        width: rows[2].width.saturating_sub(2),
+        width: rows[2].width.saturating_sub(4),
         ..rows[2]
     };
     text_input::render(frame, input_area, &modal.input, theme.input_bg_focused);
@@ -211,7 +211,7 @@ fn render_new_branch(
 
     let input_area = Rect {
         x: rows[2].x + 2,
-        width: rows[2].width.saturating_sub(2),
+        width: rows[2].width.saturating_sub(4),
         ..rows[2]
     };
     text_input::render(frame, input_area, &modal.input, theme.input_bg_focused);
