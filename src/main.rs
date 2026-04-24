@@ -41,9 +41,59 @@ enum InputAction {
     Noop,
 }
 
+/// Decision from inspecting the positional `grove [<path>]` argument.
+enum PathDispatch {
+    /// The target is a git repo (added to config if it wasn't already).
+    /// The sidebar cursor has been moved onto it; no modal needed.
+    OpenedRepo,
+    /// The target is a directory that may contain several git repos; a
+    /// scan has been scheduled and the TUI should open the
+    /// `DiscoveredRepos` modal while it runs.
+    Scan { root: PathBuf },
+}
+
+/// Expand `path`, decide whether it is a repo-to-open or a directory-to-scan,
+/// and (in the first case) update config + cursor so the TUI opens on the
+/// right worktree.  Errors are surfaced to the user via the normal CLI error
+/// path so the TUI never starts with a mysterious empty state.
+fn resolve_path_dispatch(path: &std::path::Path, app: &mut AppState) -> Result<PathDispatch> {
+    let absolute = app::expand_path(path)?;
+    if !absolute.exists() {
+        anyhow::bail!("no such path: {}", absolute.display());
+    }
+    if !absolute.is_dir() {
+        anyhow::bail!("not a directory: {}", absolute.display());
+    }
+    if git::is_git_repo(&absolute) {
+        if let Some(idx) = app.repos.iter().position(|r| r.root_path == absolute) {
+            app.ui.cursor = Some(app::SidebarCursor::Repo(idx));
+        } else {
+            // Adding the repo saves to disk and moves the sidebar cursor
+            // onto the new repo.  Errors bubble up to the CLI.
+            app.try_add_repo(&absolute.display().to_string())?;
+        }
+        return Ok(PathDispatch::OpenedRepo);
+    }
+    Ok(PathDispatch::Scan { root: absolute })
+}
+
 #[derive(Parser)]
 #[command(name = "grove", version, about)]
 struct Cli {
+    /// A repo to open, or a directory to scan for repos.
+    ///
+    /// Plain `grove` opens the configured sidebar.  `grove .` or
+    /// `grove ~/project` opens on a single repo (and adds it to the
+    /// config if it isn't already there).  `grove ~/dev` walks one
+    /// level looking for git repos and opens a picker listing what it
+    /// found.
+    #[arg(value_name = "PATH")]
+    path: Option<PathBuf>,
+
+    /// How deep `grove <dir>` descends when scanning for repos.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    depth: u8,
+
     /// Override config file path
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
@@ -95,6 +145,17 @@ async fn run_cli() -> Result<ExitCode> {
         app.apply_persisted(persisted);
     }
 
+    // `grove <path>` dispatches before entering the TUI so the single-repo
+    // case can silently mutate the config and set an initial cursor; the
+    // multi-repo case opens the TUI with a discovery modal already in
+    // place.  Resolve to a `PathDispatch` here so the TUI launch path is
+    // the same as the bare `grove` case.
+    let dispatch = if let Some(p) = cli.path.clone() {
+        Some(resolve_path_dispatch(&p, &mut app)?)
+    } else {
+        None
+    };
+
     install_panic_hook();
     let mut tui = init_terminal()?;
 
@@ -102,6 +163,21 @@ async fn run_cli() -> Result<ExitCode> {
     async_evt::spawn_terminal_reader(tx.clone());
     let _watchers = spawn_watchers(&app, &tx);
     refresh_all_statuses(&app, &tx);
+
+    // Apply the dispatch now that the TUI is up.  For Scan we spawn the
+    // scan task; the modal starts in "scanning" state and populates when
+    // `Event::ScanCompleted` arrives.
+    if let Some(d) = dispatch {
+        match d {
+            PathDispatch::OpenedRepo => {}
+            PathDispatch::Scan { root } => {
+                app.ui.modal = Some(crate::app::Modal::DiscoveredRepos(
+                    crate::app::DiscoveredReposModal::scanning(root.clone()),
+                ));
+                async_evt::spawn_scan(root, cli.depth, tx.clone());
+            }
+        }
+    }
 
     let gh_client = github::build_client();
     if let Some(client) = &gh_client {
@@ -197,6 +273,9 @@ fn dispatch_event(event: Event, app: &mut AppState, tx: &EventSender) -> bool {
         }
         Event::PrStatusReady(id, pr) => {
             app.set_worktree_pr(id, pr);
+        }
+        Event::ScanCompleted(paths) => {
+            app.update(AppMessage::ScanReady(paths));
         }
         Event::TerminalOutput => {
             // Parser advanced; next draw picks it up.
@@ -523,6 +602,7 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
             Modal::Help => help_keys(key),
             Modal::AddRepo(_) => add_repo_keys(key),
             Modal::NewWorktree(m) => new_worktree_keys(key, m),
+            Modal::DiscoveredRepos(_) => discovered_keys(key),
             Modal::ConfirmRemoveRepo { .. }
             | Modal::ConfirmRemoveWorktree { .. }
             | Modal::ConfirmDeleteBranch { .. }
@@ -838,6 +918,17 @@ fn confirm_keys(key: KeyEvent) -> AppMessage {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => AppMessage::SubmitModal,
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => AppMessage::CloseModal,
+        _ => AppMessage::NoOp,
+    }
+}
+
+fn discovered_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Esc => AppMessage::CloseModal,
+        KeyCode::Enter => AppMessage::SubmitModal,
+        KeyCode::Char(' ') => AppMessage::ToggleDiscoveredSelection,
+        KeyCode::Char('j') | KeyCode::Down => AppMessage::DiscoveredCursorDown,
+        KeyCode::Char('k') | KeyCode::Up => AppMessage::DiscoveredCursorUp,
         _ => AppMessage::NoOp,
     }
 }
