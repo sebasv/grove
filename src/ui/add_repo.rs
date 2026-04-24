@@ -201,11 +201,16 @@ fn render_row_list(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, them
 
     // `highlight_symbol` reserves a prefix column per row; non-selected
     // rows get blank padding, so the text lines up with the ▶ marker
-    // without us having to hand-indent every item.
+    // without us having to hand-indent every item.  Using `REVERSED`
+    // for highlight (fg/bg swap) rather than a foreground colour means
+    // the cursor row is a self-contained toggled attribute, so
+    // terminals that don't cleanly reset colour SGR between rows
+    // (macOS Terminal with some profiles) can't leak the cursor
+    // row's tint into adjacent rows.
     let mut state = ListState::default();
     state.select(Some(modal.cursor));
     let list = List::new(items)
-        .highlight_style(Style::default().fg(theme.accent))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("▶ ");
     frame.render_stateful_widget(list, area, &mut state);
 }
