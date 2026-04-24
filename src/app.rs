@@ -215,6 +215,38 @@ pub enum Modal {
         branch: String,
         repo_root: PathBuf,
     },
+    /// Results of a `grove <dir>` scan waiting for the user to pick
+    /// which repos to add.
+    DiscoveredRepos(DiscoveredReposModal),
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveredReposModal {
+    pub scan_root: PathBuf,
+    pub scanning: bool,
+    pub candidates: Vec<DiscoveredRepo>,
+    pub cursor: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveredRepo {
+    pub path: PathBuf,
+    pub name: String,
+    pub already_configured: bool,
+    pub selected: bool,
+}
+
+impl DiscoveredReposModal {
+    pub fn scanning(root: PathBuf) -> Self {
+        Self {
+            scan_root: root,
+            scanning: true,
+            candidates: Vec::new(),
+            cursor: 0,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -312,6 +344,12 @@ pub enum AppMessage {
     CompletionAccept,
     HelpScrollUp,
     HelpScrollDown,
+    /// A `grove <dir>` scan finished; populate the DiscoveredRepos modal.
+    ScanReady(Vec<PathBuf>),
+    /// Toggle the selection flag for the candidate under the cursor.
+    ToggleDiscoveredSelection,
+    DiscoveredCursorUp,
+    DiscoveredCursorDown,
     Quit,
     NoOp,
 }
@@ -457,9 +495,70 @@ impl AppState {
             AppMessage::HelpScrollDown => {
                 self.ui.help_scroll = self.ui.help_scroll.saturating_add(1);
             }
+            AppMessage::ScanReady(paths) => self.apply_scan_results(paths),
+            AppMessage::ToggleDiscoveredSelection => self.toggle_discovered_selection(),
+            AppMessage::DiscoveredCursorUp => self.move_discovered_cursor(-1),
+            AppMessage::DiscoveredCursorDown => self.move_discovered_cursor(1),
             AppMessage::Quit => self.should_quit = true,
             AppMessage::NoOp => {}
         }
+    }
+
+    fn apply_scan_results(&mut self, paths: Vec<PathBuf>) {
+        let Some(Modal::DiscoveredRepos(m)) = &mut self.ui.modal else {
+            return;
+        };
+        // Config stores canonicalised paths (from `resolve_repo_path`).
+        // Canonicalise on both sides of the comparison so duplicate
+        // detection works regardless of which spelling the user typed.
+        let configured: std::collections::HashSet<PathBuf> = self
+            .config
+            .repos
+            .iter()
+            .map(|r| std::fs::canonicalize(&r.path).unwrap_or_else(|_| r.path.clone()))
+            .collect();
+        let candidates: Vec<DiscoveredRepo> = paths
+            .into_iter()
+            .map(|path| {
+                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                let already_configured = configured.contains(&canonical);
+                let name = canonical
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| canonical.display().to_string());
+                DiscoveredRepo {
+                    already_configured,
+                    selected: !already_configured,
+                    path: canonical,
+                    name,
+                }
+            })
+            .collect();
+        m.scanning = false;
+        m.cursor = 0;
+        m.candidates = candidates;
+    }
+
+    fn toggle_discovered_selection(&mut self) {
+        let Some(Modal::DiscoveredRepos(m)) = &mut self.ui.modal else {
+            return;
+        };
+        if let Some(c) = m.candidates.get_mut(m.cursor) {
+            c.selected = !c.selected;
+        }
+    }
+
+    fn move_discovered_cursor(&mut self, delta: i32) {
+        let Some(Modal::DiscoveredRepos(m)) = &mut self.ui.modal else {
+            return;
+        };
+        if m.candidates.is_empty() {
+            return;
+        }
+        let last = m.candidates.len() - 1;
+        let new = (m.cursor as i32 + delta).clamp(0, last as i32) as usize;
+        m.cursor = new;
     }
 
     fn toggle_diff_view(&mut self) {
@@ -753,10 +852,42 @@ impl AppState {
                     eprintln!("warning: failed to force-delete branch {branch}: {err:#}");
                 }
             }
+            Some(Modal::DiscoveredRepos(m)) => {
+                if m.scanning {
+                    // Scan still running; keep the modal open.
+                    self.ui.modal = Some(Modal::DiscoveredRepos(m));
+                    return;
+                }
+                if let Err(err) = self.add_discovered_repos(&m) {
+                    self.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal {
+                        error: Some(format!("{err:#}")),
+                        ..m
+                    }));
+                }
+            }
             other => {
                 self.ui.modal = other;
             }
         }
+    }
+
+    fn add_discovered_repos(&mut self, modal: &DiscoveredReposModal) -> Result<()> {
+        let mut added = 0usize;
+        for c in &modal.candidates {
+            if !c.selected || c.already_configured {
+                continue;
+            }
+            if let Err(err) = self.try_add_repo(&c.path.display().to_string()) {
+                anyhow::bail!(
+                    "failed to add {} ({}); stopped after {added} repo{plural}",
+                    c.path.display(),
+                    err,
+                    plural = if added == 1 { "" } else { "s" },
+                );
+            }
+            added += 1;
+        }
+        Ok(())
     }
 
     /// Resolve the effective worktree root for a repo: repo-level override wins
@@ -990,7 +1121,7 @@ impl AppState {
         Ok(())
     }
 
-    fn try_add_repo(&mut self, raw: &str) -> Result<()> {
+    pub fn try_add_repo(&mut self, raw: &str) -> Result<()> {
         if raw.is_empty() {
             anyhow::bail!("path cannot be empty");
         }
@@ -1288,7 +1419,7 @@ impl AppState {
 }
 
 /// Expand `~` and resolve relative paths without requiring the path to exist.
-fn expand_path(raw: &std::path::Path) -> Result<PathBuf> {
+pub fn expand_path(raw: &std::path::Path) -> Result<PathBuf> {
     let s = raw.to_string_lossy();
     let expanded = if s == "~" {
         home_dir()?
@@ -2113,5 +2244,93 @@ mod tests {
         // Detected base is None → config stays null so the general default
         // can still override later.
         assert!(app.config.repos[0].base_branch.is_none());
+    }
+
+    fn make_scanning_modal(root: PathBuf) -> AppState {
+        let config_path = PathBuf::from("/tmp/grove-scan-test-config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal::scanning(root)));
+        app
+    }
+
+    #[test]
+    fn apply_scan_results_marks_already_configured() {
+        let tmp = temp_dir();
+        let existing = tmp.join("existing");
+        let fresh = tmp.join("fresh");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        init_git_repo(&existing);
+        init_git_repo(&fresh);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.try_add_repo(existing.to_str().unwrap()).unwrap();
+        app.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal::scanning(
+            tmp.clone(),
+        )));
+
+        app.update(AppMessage::ScanReady(vec![existing.clone(), fresh.clone()]));
+
+        let Some(Modal::DiscoveredRepos(m)) = &app.ui.modal else {
+            panic!("expected DiscoveredRepos");
+        };
+        assert!(!m.scanning);
+        assert_eq!(m.candidates.len(), 2);
+        // Candidates are stored in canonical form; look them up the same way.
+        let canonical_existing = std::fs::canonicalize(&existing).unwrap();
+        let canonical_fresh = std::fs::canonicalize(&fresh).unwrap();
+        let by_path: std::collections::HashMap<_, _> =
+            m.candidates.iter().map(|c| (c.path.clone(), c)).collect();
+        assert!(by_path[&canonical_existing].already_configured);
+        assert!(!by_path[&canonical_existing].selected);
+        assert!(!by_path[&canonical_fresh].already_configured);
+        assert!(by_path[&canonical_fresh].selected);
+    }
+
+    #[test]
+    fn toggle_discovered_selection_flips_cursor_row() {
+        let mut app = make_scanning_modal(PathBuf::from("/tmp"));
+        app.update(AppMessage::ScanReady(vec![
+            PathBuf::from("/tmp/a"),
+            PathBuf::from("/tmp/b"),
+        ]));
+        app.update(AppMessage::DiscoveredCursorDown);
+        app.update(AppMessage::ToggleDiscoveredSelection);
+        let Some(Modal::DiscoveredRepos(m)) = &app.ui.modal else {
+            unreachable!()
+        };
+        assert!(m.candidates[0].selected); // default-on, untouched
+        assert!(!m.candidates[1].selected); // was on (not configured), now off
+    }
+
+    #[test]
+    fn submit_discovered_adds_only_selected_and_new_candidates() {
+        let tmp = temp_dir();
+        let a = tmp.join("a");
+        let b = tmp.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        init_git_repo(&a);
+        init_git_repo(&b);
+
+        let config_path = tmp.join("config.toml");
+        let mut app = AppState::empty_fixture(config_path);
+        app.ui.modal = Some(Modal::DiscoveredRepos(DiscoveredReposModal::scanning(
+            tmp.clone(),
+        )));
+        app.update(AppMessage::ScanReady(vec![a.clone(), b.clone()]));
+
+        // Deselect `b`.
+        app.update(AppMessage::DiscoveredCursorDown);
+        app.update(AppMessage::ToggleDiscoveredSelection);
+
+        app.update(AppMessage::SubmitModal);
+        assert_eq!(app.repos.len(), 1);
+        // Both the stored repo and the test's `a` path go through the
+        // same canonicalisation, so comparing canonical forms is robust
+        // to macOS /private/var symlink expansion.
+        let canonical_a = std::fs::canonicalize(&a).unwrap();
+        assert_eq!(app.repos[0].root_path, canonical_a);
     }
 }

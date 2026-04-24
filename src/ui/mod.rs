@@ -2,6 +2,7 @@ mod add_repo;
 mod badges;
 mod confirm;
 pub mod diff;
+mod discovered;
 mod help;
 mod main_pane;
 mod sidebar;
@@ -34,14 +35,14 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
     if let Some(modal) = &app.ui.modal {
         match modal {
             Modal::Help => help::render(frame, frame.area(), app.ui.help_scroll),
-            Modal::AddRepo(state) => add_repo::render(frame, frame.area(), state),
+            Modal::AddRepo(state) => add_repo::render(frame, frame.area(), state, &app.theme),
             Modal::NewWorktree(state) => {
                 let repo_name = app
                     .repos
                     .get(state.repo_idx)
                     .map(|r| r.name.as_str())
                     .unwrap_or("?");
-                add_repo::render_new_worktree(frame, frame.area(), state, repo_name);
+                add_repo::render_new_worktree(frame, frame.area(), state, repo_name, &app.theme);
             }
             Modal::ConfirmRemoveRepo { repo_idx } => {
                 if let Some(repo) = app.repos.get(*repo_idx) {
@@ -60,6 +61,9 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
             }
             Modal::ForceDeleteBranch { branch, .. } => {
                 confirm::render_force_delete_branch(frame, frame.area(), branch);
+            }
+            Modal::DiscoveredRepos(state) => {
+                discovered::render(frame, frame.area(), state);
             }
         }
     }

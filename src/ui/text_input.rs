@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -87,8 +87,13 @@ impl TextInput {
 /// Render a TextInput into `area` on `frame`. The cursor is rendered as a
 /// reverse-video cell at the cursor byte offset (approximating column for
 /// ASCII input; multi-column chars like emoji will visually drift by one).
-pub fn render(frame: &mut Frame, area: Rect, input: &TextInput) {
-    let cursor = Style::default().add_modifier(Modifier::REVERSED);
+///
+/// `bg` paints the entire `area` so the input field is visually distinct from
+/// the surrounding modal body. Pass `theme.input_bg_focused` for the active
+/// input, `theme.input_bg` for an unfocused one.
+pub fn render(frame: &mut Frame, area: Rect, input: &TextInput, bg: Color) {
+    let base = Style::default().bg(bg);
+    let cursor = base.add_modifier(Modifier::REVERSED);
     let value = input.value();
     let cursor_byte = input.cursor_byte();
 
@@ -99,17 +104,20 @@ pub fn render(frame: &mut Frame, area: Rect, input: &TextInput) {
 
     let mut spans = Vec::new();
     if !before.is_empty() {
-        spans.push(Span::raw(before.to_string()));
+        spans.push(Span::styled(before.to_string(), base));
     }
     match under_cursor {
         Some(c) => spans.push(Span::styled(c.to_string(), cursor)),
         None => spans.push(Span::styled(" ", cursor)),
     }
     if !after.is_empty() {
-        spans.push(Span::raw(after));
+        spans.push(Span::styled(after, base));
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    // Paragraph style fills the remaining cells of `area` with `bg`, so the
+    // input row stretches visually to the edge of the caller's Rect even
+    // when the cursor + text don't cover it.
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(base), area);
 }
 
 #[cfg(test)]
