@@ -31,6 +31,9 @@ pub enum Event {
     /// an `ActivityId` via `ActivityState::start` must emit this when
     /// it finishes so the sidebar footer stops showing it.
     ActivityFinished(ActivityId),
+    /// A `grove <dir>` scan finished; `paths` is the sorted list of
+    /// repos discovered under the scan root.
+    ScanCompleted(Vec<PathBuf>),
     /// A terminal's reader thread advanced its vt100 parser state; trigger a
     /// repaint.  The active-worktree's parser is the one we render, so we
     /// don't need to know which terminal emitted the event.
@@ -127,6 +130,15 @@ pub fn spawn_fetch(repo_idx: RepoId, repo_root: PathBuf, tx: EventSender, activi
         let ok = crate::git::fetch_remote(&repo_root).is_ok();
         let _ = tx.send(Event::FetchFinished(repo_idx, ok));
         let _ = tx.send(Event::ActivityFinished(activity_id));
+    });
+}
+
+/// Spawn a blocking task that walks `root` up to `depth` levels looking
+/// for git repositories, then sends the sorted result back.
+pub fn spawn_scan(root: PathBuf, depth: u8, tx: EventSender) {
+    tokio::task::spawn_blocking(move || {
+        let paths = crate::git::discover_repos(&root, depth);
+        let _ = tx.send(Event::ScanCompleted(paths));
     });
 }
 

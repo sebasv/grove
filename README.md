@@ -42,27 +42,13 @@ Or download a binary directly from the [releases page](https://github.com/sebasv
 
 ## Quickstart
 
-On first launch, grove looks for a config file and tells you where to create it if it is missing. The config is a simple TOML file:
-
-```toml
-# macOS: ~/Library/Application Support/grove/config.toml
-# Linux: ~/.config/grove/config.toml
-
-[[repos]]
-name = "my-project"
-path = "/Users/you/dev/my-project"
-
-[[repos]]
-name = "dotfiles"
-path = "/Users/you/dotfiles"
-base_branch = "master"   # optional, defaults to "main"
-```
-
-Then just run:
-
 ```sh
 grove
 ```
+
+On first launch the sidebar is empty. Press `a` to add a repository — type or tab-complete the path, hit `Enter`. Repeat for each repo you want grove to track.
+
+That's it. Worktrees inside each repo are discovered automatically, and your choices are persisted in `config.toml` for next time.
 
 ### Key bindings
 
@@ -71,13 +57,33 @@ grove
 | `j` / `k` | Move cursor in sidebar |
 | `h` / `l` | Collapse / expand repo |
 | `Enter` | Activate worktree |
+| `a` / `R` | Add / remove repository |
+| `w` / `W` | New / remove worktree |
 | `Ctrl+T` | New terminal for current worktree |
 | `Ctrl+Space` | Cycle focus: sidebar → tab bar → content pane |
 | `m` | Toggle diff mode (local ↔ branch) |
 | `?` | Help overlay |
-| `q` | Quit |
+| `q` / `Ctrl+C` | Quit |
 
 See `?` inside grove for the full reference.
+
+### Power-user config
+
+Grove reads an optional TOML config for defaults and per-repo overrides. Run `grove --print-paths` to see where grove stores config, state, and logs.
+
+```toml
+# macOS: ~/Library/Application Support/grove/config.toml
+# Linux: ~/.config/grove/config.toml
+
+[general]
+default_base_branch = "main"        # fallback when origin/HEAD isn't set
+# worktree_root = "~/worktrees"     # optional; default is next to the repo
+
+[[repos]]
+name = "my-project"
+path = "/Users/you/dev/my-project"
+base_branch = "master"              # optional per-repo override
+```
 
 ## Feedback and contributions
 

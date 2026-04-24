@@ -2,6 +2,8 @@
 
 ## Working on PRs
 
+When the current branch has an open PR, all changes must end up on a pushed commit — never leave work as uncommitted edits or unpushed commits, since reviewers and CI only see what's on the remote.
+
 Any work on a PR is not complete until CI passes. Before considering a PR done:
 
 - Run `cargo fmt --check` and fix any formatting issues with `cargo fmt`.
