@@ -141,7 +141,7 @@ pub fn render_new_worktree(
         rows[3],
     );
 
-    render_row_list(frame, rows[4], modal, visible);
+    render_row_list(frame, rows[4], modal, visible, theme);
 
     if let Some(err) = &modal.error {
         frame.render_widget(
@@ -159,7 +159,13 @@ pub fn render_new_worktree(
     );
 }
 
-fn render_row_list(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, visible: usize) {
+fn render_row_list(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &NewWorktreeModal,
+    visible: usize,
+    theme: &Theme,
+) {
     // Build the combined list: row 0 = "Create new <input>", rows 1..
     // = filter_matches[i].  Scroll so the selected row stays visible.
     let total = modal.total_rows();
@@ -167,8 +173,11 @@ fn render_row_list(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, visi
         .cursor
         .saturating_sub(visible - 1)
         .min(total.saturating_sub(visible));
-    let dim = Style::default().fg(Color::DarkGray);
-    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // Explicit colors so the list doesn't rely on the terminal's default
+    // fg — which on some themes renders the same cells inconsistently
+    // depending on whether adjacent cells carry BOLD.
+    let dim = Style::default().fg(theme.dim);
+    let accent = Style::default().fg(theme.accent);
 
     let mut items: Vec<ListItem> = Vec::with_capacity(total);
 
@@ -177,7 +186,7 @@ fn render_row_list(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, visi
         let input = modal.input.value();
         let is_cursor = modal.cursor == 0;
         let marker = if is_cursor { "▶ " } else { "  " };
-        let label_style = if is_cursor { bold } else { Style::default() };
+        let label_style = if is_cursor { accent } else { Style::default() };
         let placeholder_style = if input.is_empty() { dim } else { label_style };
         let shown = if input.is_empty() {
             "(type a name)".to_string()
@@ -197,17 +206,12 @@ fn render_row_list(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, visi
         let is_cursor = modal.cursor == row;
         let marker = if is_cursor { "▶ " } else { "  " };
         let entry = &modal.branches[branch_idx];
-        let name_style = if is_cursor { bold } else { Style::default() };
-        let tag = if entry.is_remote_only() {
-            Span::styled(" [remote]", dim)
-        } else {
-            Span::raw("")
-        };
-        items.push(ListItem::new(Line::from(vec![
-            Span::raw(marker),
-            Span::styled(entry.display(), name_style),
-            tag,
-        ])));
+        let name_style = if is_cursor { accent } else { Style::default() };
+        let mut spans = vec![Span::raw(marker), Span::styled(entry.display(), name_style)];
+        if entry.is_remote_only() {
+            spans.push(Span::styled(" [remote]", dim));
+        }
+        items.push(ListItem::new(Line::from(spans)));
     }
 
     // Render the windowed slice.
