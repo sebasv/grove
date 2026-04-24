@@ -141,7 +141,7 @@ pub fn render_new_worktree(
         rows[3],
     );
 
-    render_row_list(frame, rows[4], modal, visible, theme);
+    render_row_list(frame, rows[4], modal, theme);
 
     if let Some(err) = &modal.error {
         frame.render_widget(
@@ -159,68 +159,55 @@ pub fn render_new_worktree(
     );
 }
 
-fn render_row_list(
-    frame: &mut Frame,
-    area: Rect,
-    modal: &NewWorktreeModal,
-    visible: usize,
-    theme: &Theme,
-) {
+fn render_row_list(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, theme: &Theme) {
     // Build the combined list: row 0 = "Create new <input>", rows 1..
-    // = filter_matches[i].  Scroll so the selected row stays visible.
-    let total = modal.total_rows();
-    let scroll_offset = modal
-        .cursor
-        .saturating_sub(visible - 1)
-        .min(total.saturating_sub(visible));
-    // Explicit colors so the list doesn't rely on the terminal's default
-    // fg — which on some themes renders the same cells inconsistently
-    // depending on whether adjacent cells carry BOLD.
+    // = filter_matches[i].  Uses `ListState` + `highlight_style` so the
+    // cursor row is the only row ratatui styles differently — every
+    // other item renders with an identical, plain style, avoiding the
+    // terminal-dependent bleed we saw when individual items mixed
+    // explicit and default foregrounds.
     let dim = Style::default().fg(theme.dim);
-    let accent = Style::default().fg(theme.accent);
 
-    let mut items: Vec<ListItem> = Vec::with_capacity(total);
+    let mut items: Vec<ListItem> = Vec::with_capacity(modal.total_rows());
 
     // Row 0: create new.
     {
         let input = modal.input.value();
-        let is_cursor = modal.cursor == 0;
-        let marker = if is_cursor { "▶ " } else { "  " };
-        let label_style = if is_cursor { accent } else { Style::default() };
-        let placeholder_style = if input.is_empty() { dim } else { label_style };
         let shown = if input.is_empty() {
             "(type a name)".to_string()
         } else {
             input.to_string()
         };
+        let placeholder_style = if input.is_empty() {
+            dim
+        } else {
+            Style::default()
+        };
         items.push(ListItem::new(Line::from(vec![
-            Span::raw(marker),
-            Span::styled("Create new branch ", label_style),
+            Span::raw("Create new branch "),
             Span::styled(shown, placeholder_style),
         ])));
     }
 
     // Rows 1..: filtered existing branches.
-    for (i, &branch_idx) in modal.filter_matches.iter().enumerate() {
-        let row = i + 1;
-        let is_cursor = modal.cursor == row;
-        let marker = if is_cursor { "▶ " } else { "  " };
+    for &branch_idx in &modal.filter_matches {
         let entry = &modal.branches[branch_idx];
-        let name_style = if is_cursor { accent } else { Style::default() };
-        let mut spans = vec![Span::raw(marker), Span::styled(entry.display(), name_style)];
+        let mut spans = vec![Span::raw(entry.display())];
         if entry.is_remote_only() {
             spans.push(Span::styled(" [remote]", dim));
         }
         items.push(ListItem::new(Line::from(spans)));
     }
 
-    // Render the windowed slice.
-    let windowed: Vec<ListItem> = items
-        .into_iter()
-        .skip(scroll_offset)
-        .take(visible)
-        .collect();
-    frame.render_widget(List::new(windowed), area);
+    // `highlight_symbol` reserves a prefix column per row; non-selected
+    // rows get blank padding, so the text lines up with the ▶ marker
+    // without us having to hand-indent every item.
+    let mut state = ListState::default();
+    state.select(Some(modal.cursor));
+    let list = List::new(items)
+        .highlight_style(Style::default().fg(theme.accent))
+        .highlight_symbol("▶ ");
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 #[cfg(test)]
