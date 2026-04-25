@@ -3,14 +3,31 @@
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::async_evt::{Event, EventSender, WorktreeId};
 
+/// Lightweight activity signals captured by the PTY reader thread.
+/// Sidebar reads this aggregated across a worktree's terminals to show
+/// whether something in there is doing work or asking for attention.
+#[derive(Debug, Default, Clone)]
+pub struct TerminalActivity {
+    /// True after the shell emitted a BEL (0x07) and false once the user
+    /// focuses this terminal again.  Used as the high-confidence "agent
+    /// is waiting for input" signal — Claude Code, gh CLI prompts, and
+    /// most readline-based tools ring the bell on prompt.
+    pub bell_pending: bool,
+    /// Wall-clock instant of the most recent PTY byte we observed.
+    /// Sidebar treats "within the last few seconds" as "thinking".
+    pub last_output_at: Option<Instant>,
+}
+
 pub struct Terminal {
     pub parser: Arc<Mutex<vt100::Parser>>,
+    pub activity: Arc<Mutex<TerminalActivity>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     child_killer: Box<dyn ChildKiller + Send + Sync>,
@@ -52,16 +69,37 @@ impl Terminal {
         let reader = master.try_clone_reader().context("cloning pty reader")?;
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, 10_000)));
+        let activity = Arc::new(Mutex::new(TerminalActivity::default()));
 
-        spawn_reader_thread(reader, parser.clone(), Arc::clone(&writer), wt_id, tx);
+        spawn_reader_thread(
+            reader,
+            parser.clone(),
+            Arc::clone(&writer),
+            Arc::clone(&activity),
+            wt_id,
+            tx,
+        );
 
         Ok(Self {
             parser,
+            activity,
             writer,
             master,
             child_killer,
             last_size: size,
         })
+    }
+
+    /// Clear the bell-pending flag — called when the user focuses this
+    /// terminal so the "needs attention" indicator goes away.
+    pub fn clear_bell(&self) {
+        if let Ok(mut a) = self.activity.lock() {
+            a.bell_pending = false;
+        }
+    }
+
+    pub fn activity_snapshot(&self) -> TerminalActivity {
+        self.activity.lock().map(|a| a.clone()).unwrap_or_default()
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
@@ -96,6 +134,7 @@ fn spawn_reader_thread(
     mut reader: Box<dyn std::io::Read + Send>,
     parser: Arc<Mutex<vt100::Parser>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    activity: Arc<Mutex<TerminalActivity>>,
     wt_id: WorktreeId,
     tx: EventSender,
 ) {
@@ -111,6 +150,11 @@ fn spawn_reader_thread(
                     // synthesise the CPR response (ESC[row;colR) and inject it back
                     // into the PTY before the application times out waiting.
                     let has_cpr = buf[..n].windows(4).any(|w| w == b"\x1b[6n");
+                    // Bell (0x07) — Claude Code and most readline tools ring
+                    // it on prompt.  We sticky-set bell_pending; sidebar
+                    // shows it as "needs attention" until the user focuses
+                    // this terminal.
+                    let has_bell = buf[..n].contains(&0x07);
                     if let Ok(mut p) = parser.lock() {
                         p.process(&buf[..n]);
                         if has_cpr {
@@ -122,6 +166,12 @@ fn spawn_reader_thread(
                                 let _ = w.write_all(resp.as_bytes());
                                 let _ = w.flush();
                             }
+                        }
+                    }
+                    if let Ok(mut a) = activity.lock() {
+                        a.last_output_at = Some(Instant::now());
+                        if has_bell {
+                            a.bell_pending = true;
                         }
                     }
                     let _ = wt_id;
@@ -165,8 +215,12 @@ pub fn key_to_pty_bytes(key: crossterm::event::KeyEvent) -> Option<Vec<u8>> {
             }
         }
         KeyCode::Enter => {
+            // Shift+Enter sends LF; TUIs like Claude Code use this as
+            // newline-in-input while plain Enter (CR) is "submit".  The
+            // kitty u-style escape was correct but only kitty-aware apps
+            // decode it, so most users got nothing.
             if key.modifiers.contains(KeyModifiers::SHIFT) {
-                b"\x1b[13;2u".to_vec()
+                b"\n".to_vec()
             } else {
                 b"\r".to_vec()
             }
@@ -277,6 +331,12 @@ mod tests {
             Some(b"\x7f".to_vec())
         );
         assert_eq!(key_to_pty_bytes(key(KeyCode::Tab)), Some(b"\t".to_vec()));
+    }
+
+    #[test]
+    fn shift_enter_emits_lf_for_newline_in_input() {
+        let k = key_with(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(key_to_pty_bytes(k), Some(b"\n".to_vec()));
     }
 
     #[test]

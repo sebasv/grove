@@ -40,6 +40,11 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 enum InputAction {
     Message(AppMessage),
     PtyBytes(Vec<u8>),
+    /// Typing a key with no scrollback meaning while in Scrollback mode:
+    /// snap back to live edge (Insert) and forward the key to the PTY.
+    /// Matches tmux copy-mode behaviour where any non-navigation keypress
+    /// exits the mode and reaches the shell.
+    ExitScrollbackAndPty(Vec<u8>),
     Noop,
 }
 
@@ -138,11 +143,17 @@ async fn run_cli() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let config = Config::load_or_default(&config_path)?;
+    let (config, config_error) = Config::load_or_default_lossy(&config_path);
     let theme_name = config.theme.base;
     let mut app = AppState::load(config, config_path.clone())?;
     app.theme_name = theme_name;
     app.theme = theme::resolve(theme_name);
+    if let Some(msg) = config_error {
+        // Log so the full error stays available; the sidebar shows a
+        // truncated version so the user knows their typo was ignored.
+        log_to_file(&format!("config: {msg}"));
+        app.config_error = Some(msg);
+    }
     if let Some(persisted) = state::load(&paths.state_file)? {
         app.apply_persisted(persisted);
     }
@@ -210,6 +221,11 @@ async fn run(
 ) -> Result<()> {
     let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(30));
     poll_interval.tick().await; // consume the immediate tick
+                                // Fast redraw tick: keeps the sidebar's "thinking" indicator honest
+                                // without coupling its lifetime to PTY output (which only fires
+                                // *while* the agent is active, never when it goes quiet).
+    let mut redraw_interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    redraw_interval.tick().await;
 
     loop {
         let main_pane_size = draw(tui, app)?;
@@ -225,6 +241,11 @@ async fn run(
                     poll_github_prs(app, &tx, client);
                 }
                 tick_fetch_scheduler(app, &tx);
+                continue;
+            }
+            _ = redraw_interval.tick() => {
+                // No state mutation — just rerun the loop so the next
+                // draw refreshes time-sensitive sidebar indicators.
                 continue;
             }
         };
@@ -438,6 +459,12 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
             if let Some(id) = app.active_worktree_id() {
                 if let Some(ts) = app.terminals.get_mut(&id) {
                     ts.scroll(-3);
+                    // Reaching the live edge with the wheel exits
+                    // scrollback automatically — the user clearly wants
+                    // to be back where the shell is writing.
+                    if ts.mode == crate::app::TerminalMode::Scrollback && ts.scroll_offset == 0 {
+                        ts.toggle_scrollback();
+                    }
                 }
             }
         }
@@ -551,6 +578,18 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
         InputAction::PtyBytes(bytes) => {
             if let Some(id) = app.active_worktree_id() {
                 if let Some(ts) = app.terminals.get_mut(&id) {
+                    if let Some(term) = ts.active_mut() {
+                        let _ = term.write(&bytes);
+                    }
+                }
+            }
+        }
+        InputAction::ExitScrollbackAndPty(bytes) => {
+            if let Some(id) = app.active_worktree_id() {
+                if let Some(ts) = app.terminals.get_mut(&id) {
+                    if ts.mode == crate::app::TerminalMode::Scrollback {
+                        ts.toggle_scrollback();
+                    }
                     if let Some(term) = ts.active_mut() {
                         let _ = term.write(&bytes);
                     }
@@ -682,7 +721,20 @@ fn main_focus_action(key: KeyEvent, app: &AppState) -> InputAction {
     };
 
     match ts.mode {
-        crate::app::TerminalMode::Scrollback => InputAction::Message(scrollback_keys(key)),
+        crate::app::TerminalMode::Scrollback => {
+            let msg = scrollback_keys(key);
+            if !matches!(msg, AppMessage::NoOp) {
+                return InputAction::Message(msg);
+            }
+            // Any key the scrollback navigator doesn't claim — letters,
+            // digits, Enter, Backspace, Ctrl+anything — snaps the user
+            // back to the live edge and reaches the shell.  Same UX as
+            // tmux copy-mode: typing means "I'm done reading."
+            match terminal::key_to_pty_bytes(key) {
+                Some(bytes) => InputAction::ExitScrollbackAndPty(bytes),
+                None => InputAction::Noop,
+            }
+        }
         crate::app::TerminalMode::Insert => match terminal::key_to_pty_bytes(key) {
             Some(bytes) => InputAction::PtyBytes(bytes),
             None => InputAction::Noop,

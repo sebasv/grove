@@ -34,6 +34,10 @@ pub struct AppState {
     /// is true and `github_authenticated` is false.  Cached to avoid
     /// shelling out to `git remote` on every render.
     pub has_github_repo: bool,
+    /// Set when `config.toml` exists but failed to parse.  Grove falls
+    /// back to defaults so the user still gets a working TUI; this
+    /// message surfaces in the sidebar so the typo isn't silent.
+    pub config_error: Option<String>,
 }
 
 /// Cached rects from the most recent `ui::render` pass.  Used by mouse
@@ -142,6 +146,52 @@ impl WorktreeTerminals {
     pub fn scroll_end(&mut self) {
         self.scroll_offset = 0;
     }
+
+    /// Aggregate per-worktree agent state across every terminal in this
+    /// worktree.  Bell beats thinking beats idle: any waiting shell makes
+    /// the whole worktree "waiting", and any recently-active shell makes
+    /// it "thinking".
+    pub fn agent_state(&self, thinking_window: std::time::Duration) -> AgentState {
+        let mut bell = false;
+        let mut active = false;
+        let now = std::time::Instant::now();
+        for t in &self.list {
+            let snap = t.activity_snapshot();
+            if snap.bell_pending {
+                bell = true;
+            }
+            if let Some(last) = snap.last_output_at {
+                if now.saturating_duration_since(last) <= thinking_window {
+                    active = true;
+                }
+            }
+        }
+        if bell {
+            AgentState::Waiting
+        } else if active {
+            AgentState::Thinking
+        } else {
+            AgentState::Idle
+        }
+    }
+
+    /// Clear the bell-pending flag on every terminal in this worktree.
+    /// Called when the user activates the worktree so the indicator
+    /// disappears as soon as the user has acknowledged it.
+    pub fn clear_bells(&self) {
+        for t in &self.list {
+            t.clear_bell();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentState {
+    Idle,
+    /// Recent PTY output — something is happening / "thinking".
+    Thinking,
+    /// BEL received and not yet acknowledged — needs attention.
+    Waiting,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -434,6 +484,7 @@ impl AppState {
             activity,
             github_authenticated: false,
             has_github_repo,
+            config_error: None,
         })
     }
 
@@ -1391,6 +1442,11 @@ impl AppState {
                         branch: wt.branch.clone(),
                     })
                 });
+                // Acknowledge any pending bells in this worktree's
+                // terminals — the user is now looking at them.
+                if let Some(ts) = self.terminals.get(&(repo, worktree)) {
+                    ts.clear_bells();
+                }
             }
             SidebarCursor::Repo(idx) => {
                 let path = self.repos[idx].root_path.clone();
@@ -1670,6 +1726,7 @@ impl AppState {
             },
             github_authenticated: false,
             has_github_repo: false,
+            config_error: None,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
         state
@@ -1691,6 +1748,7 @@ impl AppState {
             activity: ActivityState::default(),
             github_authenticated: false,
             has_github_repo: false,
+            config_error: None,
         }
     }
 }
