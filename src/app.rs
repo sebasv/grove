@@ -517,7 +517,7 @@ impl AppState {
                 // the TUI (config could be read-only, disk full, etc.).
                 self.config.theme.base = self.theme_name;
                 if let Err(err) = self.config.save(&self.config_path) {
-                    eprintln!("warning: failed to persist theme: {err:#}");
+                    crate::paths::log_warning(&format!("failed to persist theme: {err:#}"));
                 }
             }
             AppMessage::BranchCursorUp => {
@@ -863,7 +863,7 @@ impl AppState {
         };
 
         if let Err(err) = self.try_remove_worktree(id) {
-            eprintln!("warning: failed to remove worktree: {err:#}");
+            crate::paths::log_warning(&format!("failed to remove worktree: {err:#}"));
             return;
         }
 
@@ -871,12 +871,16 @@ impl AppState {
             DeleteChoice::KeepBranch => {}
             DeleteChoice::Delete => {
                 if let Err(err) = git::delete_branch(&repo_root, &branch) {
-                    eprintln!("warning: failed to delete branch {branch}: {err:#}");
+                    crate::paths::log_warning(&format!(
+                        "failed to delete branch {branch}: {err:#}"
+                    ));
                 }
             }
             DeleteChoice::ForceDelete => {
                 if let Err(err) = git::force_delete_branch(&repo_root, &branch) {
-                    eprintln!("warning: failed to force-delete branch {branch}: {err:#}");
+                    crate::paths::log_warning(&format!(
+                        "failed to force-delete branch {branch}: {err:#}"
+                    ));
                 }
             }
         }
@@ -933,7 +937,7 @@ impl AppState {
             }
             Some(Modal::ConfirmRemoveRepo { repo_idx }) => {
                 if let Err(err) = self.remove_repo(repo_idx) {
-                    eprintln!("warning: failed to remove repo: {err:#}");
+                    crate::paths::log_warning(&format!("failed to remove repo: {err:#}"));
                 }
             }
             Some(Modal::NewWorktree(m)) => {
@@ -1645,7 +1649,7 @@ fn load_repos(config: &Config) -> Vec<Repo> {
         let worktrees = match git::list_worktrees(&repo_cfg.path) {
             Ok(list) => list,
             Err(err) => {
-                eprintln!("warning: skipping repo {}: {err:#}", repo_cfg.name);
+                crate::paths::log_warning(&format!("skipping repo {}: {err:#}", repo_cfg.name));
                 continue;
             }
         };
@@ -2692,5 +2696,61 @@ mod tests {
             "branch at the same tip as local main should be reported merged \
              even when origin/main is behind"
         );
+    }
+
+    /// `git branch -d` consults the branch's upstream when one is set.
+    /// If the upstream is behind the branch, the CLI rejects the delete
+    /// even when our `is_branch_merged` (which checks against base, not
+    /// upstream) said it was safe.  Verify our libgit2-based delete
+    /// succeeds in that exact case.
+    #[test]
+    fn delete_branch_succeeds_when_upstream_is_behind() {
+        let tmp = temp_dir();
+        let bare = tmp.join("remote.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["init", "--bare", "--quiet", "--initial-branch=main"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let repo = tmp.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", &bare.display().to_string()],
+        );
+        run_git(&repo, &["push", "--quiet", "-u", "origin", "main"]);
+        // Local main lands a commit ahead of origin/main.
+        std::fs::write(repo.join("ahead.txt"), "ahead").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "ahead",
+                "--quiet",
+            ],
+        );
+        // New branch off local main with an upstream pointing at origin/main
+        // — exactly the config a user with `branch.autoSetupMerge=always`
+        // would end up in.  `git branch -d fresh` would refuse here
+        // because `fresh` is ahead of its tracked upstream.
+        run_git(&repo, &["branch", "fresh"]);
+        run_git(&repo, &["branch", "--set-upstream-to=origin/main", "fresh"]);
+
+        crate::git::delete_branch(&repo, "fresh").expect("delete should succeed via libgit2");
+        let branches = crate::git::list_branches(&repo).unwrap();
+        assert!(branches
+            .iter()
+            .all(|b| b.name != "fresh" || b.remote.is_some()));
     }
 }

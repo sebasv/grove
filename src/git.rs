@@ -608,12 +608,27 @@ pub fn create_worktree_from_remote(
     )
 }
 
+/// Delete `branch` after `is_branch_merged` has already confirmed it's
+/// safe to remove.  Uses libgit2 rather than `git branch -d` because the
+/// CLI re-runs its own merged-check against the branch's *upstream* (if
+/// one is configured via `branch.autoSetupMerge` etc.), which would
+/// reject a fresh branch that's reachable from local main but ahead of
+/// `origin/main` — the exact case our merged-check already approved.
 pub fn delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
-    run_git_cmd(repo_root, &["branch", "-d", branch])
+    let repo = Repository::open(repo_root)
+        .with_context(|| format!("opening repository at {}", repo_root.display()))?;
+    let mut b = repo
+        .find_branch(branch, BranchType::Local)
+        .with_context(|| format!("looking up branch {branch}"))?;
+    b.delete()
+        .with_context(|| format!("deleting branch {branch}"))
 }
 
 pub fn force_delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
-    run_git_cmd(repo_root, &["branch", "-D", branch])
+    // Same reasoning as `delete_branch`: skip `git`'s safety net and
+    // use libgit2 directly.  Force-delete from the UI explicitly opts
+    // into discarding work that isn't reachable from base.
+    delete_branch(repo_root, branch)
 }
 
 /// Shell out to `git fetch --all --prune` for `repo_root`.  Shelling
