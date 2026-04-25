@@ -4,6 +4,11 @@ A terminal UI for cultivating git repositories, worktrees, and the work inside t
 
 If you juggle several feature branches at once and find `git worktree add` painful to drive by hand, grove keeps all of them in one place: navigate between worktrees in the sidebar, run commands in embedded terminals, and review diffs without ever leaving the TUI.
 
+![grove screenshot](assets/screenshot.png)
+
+<details>
+<summary>ASCII preview (when the screenshot can't render)</summary>
+
 ```
 ┌─ Grove ─────────────────────────────────────────────────────────────────┐
 │                                                                          │
@@ -19,6 +24,8 @@ If you juggle several feature branches at once and find `git worktree add` painf
 │    ● wip/zsh       +1 ~3   ┃                                             │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 ## Features
 
@@ -98,7 +105,7 @@ base_branch = "master"              # optional per-repo override
 
 ## Feedback and contributions
 
-Grove is stable and evolving. If something doesn't work, feels off, or you have an idea — please [open an issue](https://github.com/sebasv/grove/issues). Pull requests are welcome too; check the issues list for anything tagged `good first issue` or just reach out before starting something large. [`DESIGN.md`](DESIGN.md) is the place to start if you want context on how grove is put together before opening a PR.
+Grove is stable and evolving. If something doesn't work, feels off, or you have an idea — please [open an issue](https://github.com/sebasv/grove/issues). Pull requests are welcome too; check the issues list for anything tagged `good first issue` or just reach out before starting something large. [`design/DESIGN.md`](design/DESIGN.md) is the place to start if you want context on how grove is put together before opening a PR.
 
 ## License
 
