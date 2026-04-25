@@ -38,17 +38,31 @@ pub fn load(path: &Path) -> Result<Option<PersistedState>> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading state at {}", path.display()))?;
-    let state: PersistedState =
+
+    // Peek at schema_version first. A schema bump renames/reshapes inner
+    // fields (e.g. v1 → v2 changed `active_worktree` from `(repo, branch)`
+    // to `path`), so a strict full parse would fail on an outdated file
+    // before we ever check the version. Treat any older/unknown version
+    // as "ignore quietly" rather than surfacing a TOML parse error.
+    #[derive(Deserialize)]
+    struct VersionPeek {
+        #[serde(default)]
+        schema_version: u32,
+    }
+    let peek: VersionPeek =
         toml::from_str(&content).with_context(|| format!("parsing state at {}", path.display()))?;
-    if state.schema_version != CURRENT_SCHEMA_VERSION {
+    if peek.schema_version != CURRENT_SCHEMA_VERSION {
         eprintln!(
             "warning: ignoring state file at {} (schema_version={}, expected {})",
             path.display(),
-            state.schema_version,
+            peek.schema_version,
             CURRENT_SCHEMA_VERSION
         );
         return Ok(None);
     }
+
+    let state: PersistedState =
+        toml::from_str(&content).with_context(|| format!("parsing state at {}", path.display()))?;
     Ok(Some(state))
 }
 
@@ -118,6 +132,25 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("state.toml");
         std::fs::write(&path, "schema_version = 99\n").unwrap();
+        assert!(load(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_ignores_v1_state_with_old_active_worktree_shape() {
+        // v1 keyed `active_worktree` by `(repo, branch)`. After bumping to
+        // v2 the inner shape no longer parses, but `load` must still treat
+        // the file as "outdated, ignore" rather than surfacing a TOML
+        // parse error to the user.
+        let dir = tempdir();
+        let path = dir.join("state.toml");
+        std::fs::write(
+            &path,
+            "schema_version = 1\n\
+             [ui.active_worktree]\n\
+             repo = \"grove\"\n\
+             branch = \"feat/sidebar\"\n",
+        )
+        .unwrap();
         assert!(load(&path).unwrap().is_none());
     }
 
