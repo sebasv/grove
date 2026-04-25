@@ -3,18 +3,76 @@
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::async_evt::{Event, EventSender, WorktreeId};
 
+/// Lightweight activity signals captured by the vt100 parser as it
+/// processes PTY output.  Sidebar reads this aggregated across a
+/// worktree's terminals to show whether something in there is doing
+/// work or asking for attention.
+#[derive(Debug, Default, Clone)]
+pub struct TerminalActivity {
+    /// True after the shell emitted a BEL (0x07) and false once the user
+    /// focuses this terminal again.  High-confidence "needs attention"
+    /// signal — Claude Code, gh CLI prompts, and most readline tools
+    /// ring the bell when waiting on input.
+    pub bell_pending: bool,
+    /// Most recent OSC 0 / OSC 2 window title set by the shell.  Many
+    /// TUIs (Claude Code, oh-my-zsh, gum, …) prefix it with a spinner
+    /// glyph while working and a static glyph while idle, which gives
+    /// us a precise "thinking" signal — see [`title_is_thinking`].
+    pub title: String,
+    /// Wall-clock instant of the most recent PTY byte we observed.
+    /// Used as a low-precision fallback for TUIs that don't announce
+    /// state via the window title.
+    pub last_output_at: Option<Instant>,
+}
+
+/// `vt100::Callbacks` impl that funnels relevant events into the shared
+/// activity slot.  Held by the parser; mutated by `Parser::process`
+/// without grove having to scan bytes itself.
+pub(crate) struct GroveCallbacks {
+    activity: Arc<Mutex<TerminalActivity>>,
+}
+
+impl vt100::Callbacks for GroveCallbacks {
+    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+        if let Ok(mut a) = self.activity.lock() {
+            a.title = String::from_utf8_lossy(title).into_owned();
+        }
+    }
+
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        if let Ok(mut a) = self.activity.lock() {
+            a.bell_pending = true;
+        }
+    }
+}
+
 pub struct Terminal {
-    pub parser: Arc<Mutex<vt100::Parser>>,
+    pub parser: Arc<Mutex<vt100::Parser<GroveCallbacks>>>,
+    pub activity: Arc<Mutex<TerminalActivity>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     child_killer: Box<dyn ChildKiller + Send + Sync>,
     last_size: PtySize,
+}
+
+/// Does the shell's most recent window title look like a "thinking" cue?
+/// Claude Code's title cycles through braille pattern glyphs (U+2800–
+/// U+28FF) while the assistant is producing output, and switches to a
+/// static `✳` star when idle.  We accept any leading braille character,
+/// which also catches oh-my-zsh, gum, and any other TUI spinner that
+/// uses the same code-point block.
+pub fn title_is_thinking(title: &str) -> bool {
+    title
+        .chars()
+        .next()
+        .is_some_and(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
 }
 
 impl Terminal {
@@ -51,17 +109,43 @@ impl Terminal {
         ));
         let reader = master.try_clone_reader().context("cloning pty reader")?;
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, 10_000)));
+        let activity = Arc::new(Mutex::new(TerminalActivity::default()));
+        let callbacks = GroveCallbacks {
+            activity: Arc::clone(&activity),
+        };
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            size.rows, size.cols, 10_000, callbacks,
+        )));
 
-        spawn_reader_thread(reader, parser.clone(), Arc::clone(&writer), wt_id, tx);
+        spawn_reader_thread(
+            reader,
+            parser.clone(),
+            Arc::clone(&writer),
+            Arc::clone(&activity),
+            wt_id,
+            tx,
+        );
 
         Ok(Self {
             parser,
+            activity,
             writer,
             master,
             child_killer,
             last_size: size,
         })
+    }
+
+    /// Clear the bell-pending flag — called when the user focuses this
+    /// terminal so the "needs attention" indicator goes away.
+    pub fn clear_bell(&self) {
+        if let Ok(mut a) = self.activity.lock() {
+            a.bell_pending = false;
+        }
+    }
+
+    pub fn activity_snapshot(&self) -> TerminalActivity {
+        self.activity.lock().map(|a| a.clone()).unwrap_or_default()
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
@@ -94,8 +178,9 @@ impl Drop for Terminal {
 
 fn spawn_reader_thread(
     mut reader: Box<dyn std::io::Read + Send>,
-    parser: Arc<Mutex<vt100::Parser>>,
+    parser: Arc<Mutex<vt100::Parser<GroveCallbacks>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    activity: Arc<Mutex<TerminalActivity>>,
     wt_id: WorktreeId,
     tx: EventSender,
 ) {
@@ -112,6 +197,9 @@ fn spawn_reader_thread(
                     // into the PTY before the application times out waiting.
                     let has_cpr = buf[..n].windows(4).any(|w| w == b"\x1b[6n");
                     if let Ok(mut p) = parser.lock() {
+                        // Bell + window-title updates are picked up by
+                        // GroveCallbacks during parser.process(); no
+                        // byte-scanning needed on our side.
                         p.process(&buf[..n]);
                         if has_cpr {
                             let pos = p.screen().cursor_position();
@@ -123,6 +211,9 @@ fn spawn_reader_thread(
                                 let _ = w.flush();
                             }
                         }
+                    }
+                    if let Ok(mut a) = activity.lock() {
+                        a.last_output_at = Some(Instant::now());
                     }
                     let _ = wt_id;
                     if tx.send(Event::TerminalOutput).is_err() {
@@ -165,8 +256,12 @@ pub fn key_to_pty_bytes(key: crossterm::event::KeyEvent) -> Option<Vec<u8>> {
             }
         }
         KeyCode::Enter => {
+            // Shift+Enter sends LF; TUIs like Claude Code use this as
+            // newline-in-input while plain Enter (CR) is "submit".  The
+            // kitty u-style escape was correct but only kitty-aware apps
+            // decode it, so most users got nothing.
             if key.modifiers.contains(KeyModifiers::SHIFT) {
-                b"\x1b[13;2u".to_vec()
+                b"\n".to_vec()
             } else {
                 b"\r".to_vec()
             }
@@ -280,6 +375,12 @@ mod tests {
     }
 
     #[test]
+    fn shift_enter_emits_lf_for_newline_in_input() {
+        let k = key_with(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(key_to_pty_bytes(k), Some(b"\n".to_vec()));
+    }
+
+    #[test]
     fn alt_prefix_emits_escape() {
         let k = key_with(KeyCode::Char('b'), KeyModifiers::ALT);
         assert_eq!(key_to_pty_bytes(k), Some(vec![0x1b, b'b']));
@@ -295,5 +396,28 @@ mod tests {
             key_to_pty_bytes(key(KeyCode::F(5))),
             Some(b"\x1b[15~".to_vec())
         );
+    }
+
+    #[test]
+    fn title_thinking_recognises_braille_spinner_glyphs() {
+        // Real samples captured from Claude Code while streaming.
+        assert!(title_is_thinking("⠂ Claude Code"));
+        assert!(title_is_thinking("⠐ Run ls command in root directory"));
+        assert!(title_is_thinking("⡀ anything"));
+        // U+28FF is the last code point in the braille block.
+        assert!(title_is_thinking("\u{28FF} edge"));
+    }
+
+    #[test]
+    fn title_thinking_rejects_idle_and_unrelated_glyphs() {
+        // `✳` (U+2733) is Claude Code's static "idle" prefix.
+        assert!(!title_is_thinking("✳ Claude Code"));
+        assert!(!title_is_thinking("✳ Say hi"));
+        // Plain text titles (a normal shell, vim, etc.) are not thinking.
+        assert!(!title_is_thinking("~/dev/grove — zsh"));
+        assert!(!title_is_thinking(""));
+        // U+2800 is the start of braille; U+27FF is one before — must
+        // not be treated as a spinner glyph.
+        assert!(!title_is_thinking("\u{27FF} not braille"));
     }
 }
