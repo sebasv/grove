@@ -355,6 +355,45 @@ fn looks_like_repo_root(path: &Path) -> bool {
     path.join("HEAD").is_file() && path.join("config").is_file()
 }
 
+/// Is every commit on `branch` reachable from `base` or its `origin/base`
+/// tracking ref?  Returns `true` when a safe `git branch -d` will succeed
+/// and `false` when a force-delete (`-D`) would be required.
+///
+/// Missing branches return `false` (treat the "branch doesn't exist" case
+/// as unmerged — safer default for a deletion UI).  Both the local base
+/// and `origin/base` are checked so a freshly-cut branch off local main
+/// isn't flagged as "unmerged" just because local main is ahead of the
+/// remote.
+pub fn is_branch_merged(repo_root: &Path, branch: &str, base: &str) -> bool {
+    let Ok(repo) = Repository::open(repo_root) else {
+        return false;
+    };
+    let Ok(branch_ref) = repo.find_branch(branch, BranchType::Local) else {
+        return false;
+    };
+    let Some(branch_oid) = branch_ref.get().target() else {
+        return false;
+    };
+    let bases = [
+        repo.find_branch(base, BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().target()),
+        repo.find_branch(&format!("origin/{base}"), BranchType::Remote)
+            .ok()
+            .and_then(|b| b.get().target()),
+    ];
+    bases.iter().flatten().any(|&base_oid| {
+        // "branch merged into base" iff every commit on branch is reachable
+        // from base — equivalent to `git merge-base --is-ancestor branch base`.
+        // libgit2's `graph_descendant_of` is strict (a commit is not a
+        // descendant of itself), so cover the equal-tip case explicitly.
+        branch_oid == base_oid
+            || repo
+                .graph_descendant_of(base_oid, branch_oid)
+                .unwrap_or(false)
+    })
+}
+
 pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
     let repo = Repository::open(repo_root)
         .with_context(|| format!("opening repository at {}", repo_root.display()))?;
@@ -569,12 +608,27 @@ pub fn create_worktree_from_remote(
     )
 }
 
+/// Delete `branch` after `is_branch_merged` has already confirmed it's
+/// safe to remove.  Uses libgit2 rather than `git branch -d` because the
+/// CLI re-runs its own merged-check against the branch's *upstream* (if
+/// one is configured via `branch.autoSetupMerge` etc.), which would
+/// reject a fresh branch that's reachable from local main but ahead of
+/// `origin/main` — the exact case our merged-check already approved.
 pub fn delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
-    run_git_cmd(repo_root, &["branch", "-d", branch])
+    let repo = Repository::open(repo_root)
+        .with_context(|| format!("opening repository at {}", repo_root.display()))?;
+    let mut b = repo
+        .find_branch(branch, BranchType::Local)
+        .with_context(|| format!("looking up branch {branch}"))?;
+    b.delete()
+        .with_context(|| format!("deleting branch {branch}"))
 }
 
 pub fn force_delete_branch(repo_root: &Path, branch: &str) -> Result<()> {
-    run_git_cmd(repo_root, &["branch", "-D", branch])
+    // Same reasoning as `delete_branch`: skip `git`'s safety net and
+    // use libgit2 directly.  Force-delete from the UI explicitly opts
+    // into discarding work that isn't reachable from base.
+    delete_branch(repo_root, branch)
 }
 
 /// Shell out to `git fetch --all --prune` for `repo_root`.  Shelling

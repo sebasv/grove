@@ -1,5 +1,6 @@
 ---
 source: src/ui/help.rs
+assertion_line: 100
 expression: terminal.backend()
 ---
 " PROJECTS                       ┌ grove ─────────────────────────────┐"
@@ -17,9 +18,10 @@ expression: terminal.backend()
 " [a] │    a                 add repository                      │    │"
 " [w] │    R                 remove repository                   │    │"
 "     │    r                 refresh git status                  │    │"
-" j/k │                                                          │    │"
-" ?   │  Main (terminal)                                         │    │"
-" q   │    Ctrl+t            new tab                             │    │"
+" j/k │    L                 view background warnings log        │    │"
+" ?   │                                                          │    │"
+" q   │  Main (terminal)                                         │    │"
+"     │    Ctrl+t            new tab                             │    │"
 "     │    Ctrl+w            close tab                           │    │"
 "     │    Ctrl+h / Ctrl+l   previous / next tab                 │    │"
 "     │    Ctrl+\            enter scrollback mode               │    │"
@@ -36,7 +38,6 @@ expression: terminal.backend()
 "     │    j / k             prev / next file                    │    │"
 "     │    Tab               list ↔ content                      │    │"
 "     │    J / K             scroll content                      │    │"
-"     │    s / u             stage / unstage                     │    │"
 "     └ ↓ more ──────────────────────────────────────────────────┘    │"
 "                                │                                    │"
 "                                │                                    │"

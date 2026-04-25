@@ -26,6 +26,7 @@ pub fn render(frame: &mut Frame, area: Rect, scroll: u16) {
         Line::from("    a                 add repository"),
         Line::from("    R                 remove repository"),
         Line::from("    r                 refresh git status"),
+        Line::from("    L                 view background warnings log"),
         Line::from(""),
         Line::styled("  Main (terminal)", bold),
         Line::from("    Ctrl+t            new tab"),

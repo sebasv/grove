@@ -392,17 +392,22 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
     // user can wheel through it.  All other mouse events are swallowed while
     // any modal is visible to keep keyboard-only UX for inputs.
     let help_open = matches!(app.ui.modal, Some(Modal::Help));
-    if app.ui.modal.is_some() && !help_open {
+    let log_open = matches!(app.ui.modal, Some(Modal::ViewLog(_)));
+    if app.ui.modal.is_some() && !help_open && !log_open {
         return;
     }
     if help_open {
         match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                app.update(AppMessage::HelpScrollUp);
-            }
-            MouseEventKind::ScrollDown => {
-                app.update(AppMessage::HelpScrollDown);
-            }
+            MouseEventKind::ScrollUp => app.update(AppMessage::HelpScrollUp),
+            MouseEventKind::ScrollDown => app.update(AppMessage::HelpScrollDown),
+            _ => {}
+        }
+        return;
+    }
+    if log_open {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => app.update(AppMessage::LogScrollUp),
+            MouseEventKind::ScrollDown => app.update(AppMessage::LogScrollDown),
             _ => {}
         }
         return;
@@ -649,10 +654,9 @@ fn key_to_action(key: KeyEvent, app: &AppState) -> InputAction {
             Modal::AddRepo(_) => add_repo_keys(key),
             Modal::NewWorktree(m) => new_worktree_keys(key, m),
             Modal::DiscoveredRepos(_) => discovered_keys(key),
-            Modal::ConfirmRemoveRepo { .. }
-            | Modal::ConfirmRemoveWorktree { .. }
-            | Modal::ConfirmDeleteBranch { .. }
-            | Modal::ForceDeleteBranch { .. } => confirm_keys(key),
+            Modal::ConfirmRemoveWorktree { .. } => remove_worktree_keys(key),
+            Modal::ConfirmRemoveRepo { .. } => confirm_keys(key),
+            Modal::ViewLog(_) => log_keys(key),
         });
     }
 
@@ -899,6 +903,20 @@ fn default_keys(key: KeyEvent) -> AppMessage {
         KeyCode::Char('w') => AppMessage::OpenNewWorktree,
         KeyCode::Char('W') => AppMessage::OpenConfirmRemoveWorktree,
         KeyCode::Char('r') => AppMessage::RefreshAll,
+        KeyCode::Char('L') => AppMessage::OpenLogViewer,
+        _ => AppMessage::NoOp,
+    }
+}
+
+fn log_keys(key: KeyEvent) -> AppMessage {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('L') => AppMessage::CloseModal,
+        KeyCode::Char('j') | KeyCode::Down => AppMessage::LogScrollDown,
+        KeyCode::Char('k') | KeyCode::Up => AppMessage::LogScrollUp,
+        KeyCode::PageDown => AppMessage::LogScrollPageDown,
+        KeyCode::PageUp => AppMessage::LogScrollPageUp,
+        KeyCode::Char('g') | KeyCode::Home => AppMessage::LogScrollTop,
+        KeyCode::Char('G') | KeyCode::End => AppMessage::LogScrollBottom,
         _ => AppMessage::NoOp,
     }
 }
@@ -970,6 +988,24 @@ fn discovered_keys(key: KeyEvent) -> AppMessage {
         KeyCode::Char(' ') => AppMessage::ToggleDiscoveredSelection,
         KeyCode::Char('j') | KeyCode::Down => AppMessage::DiscoveredCursorDown,
         KeyCode::Char('k') | KeyCode::Up => AppMessage::DiscoveredCursorUp,
+        _ => AppMessage::NoOp,
+    }
+}
+
+/// Absolute keys for the unified remove-worktree modal.  No arrow
+/// navigation — the user picks an outcome by pressing the letter of
+/// the option they want.  Capital D is intentionally distinct from
+/// lowercase d so muscle-memory Enter can't silently force-delete an
+/// unmerged branch.
+fn remove_worktree_keys(key: KeyEvent) -> AppMessage {
+    use crate::app::DeleteChoice;
+    match key.code {
+        KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Enter => {
+            AppMessage::ConfirmWorktreeDeletion(DeleteChoice::KeepBranch)
+        }
+        KeyCode::Char('d') => AppMessage::ConfirmWorktreeDeletion(DeleteChoice::Delete),
+        KeyCode::Char('D') => AppMessage::ConfirmWorktreeDeletion(DeleteChoice::ForceDelete),
+        KeyCode::Esc => AppMessage::CloseModal,
         _ => AppMessage::NoOp,
     }
 }
