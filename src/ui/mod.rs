@@ -64,7 +64,7 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
                     confirm::render_remove_worktree(
                         frame,
                         frame.area(),
-                        &wt.branch,
+                        &wt.label(),
                         &wt.path,
                         &repo.name,
                         *variant,

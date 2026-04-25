@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 
-use crate::model::{Worktree, WorktreeStatus};
+use crate::model::{HeadRef, Worktree, WorktreeStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffFile {
@@ -401,17 +401,9 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
 
     // Primary checkout.
     if let Some(workdir) = repo.workdir() {
-        // Fall back to an abbreviated OID for detached HEAD so the primary
-        // checkout is never silently absent from the sidebar.
-        let branch = branch_name_of_head(&repo).or_else(|| {
-            repo.head().ok()?.target().map(|oid| {
-                let s = oid.to_string();
-                format!("(detached) {}", &s[..s.len().min(7)])
-            })
-        });
-        if let Some(branch) = branch {
+        if let Some(head) = head_ref_of(&repo) {
             out.push(Worktree {
-                branch,
+                head,
                 path: workdir.to_path_buf(),
                 is_primary: true,
                 status: None,
@@ -420,7 +412,10 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
         }
     }
 
-    // Linked worktrees.
+    // Linked worktrees. Detached HEAD (rebase, bisect, explicit checkout of a
+    // commit) is a first-class case — surface it as `HeadRef::Detached` so the
+    // user can navigate to the worktree and resolve, instead of silently
+    // dropping it from the sidebar.
     let wt_names = repo.worktrees().context("listing linked worktrees")?;
     for name in wt_names.iter().flatten() {
         let Ok(wt) = repo.find_worktree(name) else {
@@ -430,11 +425,11 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
         let Ok(wt_repo) = Repository::open_from_worktree(&wt) else {
             continue;
         };
-        let Some(branch) = branch_name_of_head(&wt_repo) else {
+        let Some(head) = head_ref_of(&wt_repo) else {
             continue;
         };
         out.push(Worktree {
-            branch,
+            head,
             path: wt_path,
             is_primary: false,
             status: None,
@@ -443,13 +438,33 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<Worktree>> {
     }
 
     // git enumerates .git/worktrees/ in filesystem (inode) order, which is not
-    // stable across worktree creation. Sort linked worktrees alphabetically so
-    // the sidebar order is deterministic regardless of when each was added.
+    // stable across worktree creation. Sort linked worktrees by their displayed
+    // label so the sidebar order is deterministic regardless of when each was
+    // added.
     if out.len() > 1 {
-        out[1..].sort_by(|a, b| a.branch.cmp(&b.branch));
+        out[1..].sort_by_key(|w| w.head.label());
     }
 
     Ok(out)
+}
+
+/// Resolve a repo's HEAD to a `HeadRef`. Returns `None` only when the
+/// underlying ref lookup fails entirely (corrupt repo, missing HEAD).
+fn head_ref_of(repo: &Repository) -> Option<HeadRef> {
+    let head = repo.head().ok()?;
+    if let Some(name) = branch_name_of_head_inner(&head) {
+        return Some(HeadRef::Branch(name));
+    }
+    let oid = head.target()?;
+    let s = oid.to_string();
+    Some(HeadRef::Detached(s[..s.len().min(7)].to_string()))
+}
+
+fn branch_name_of_head_inner(head: &git2::Reference<'_>) -> Option<String> {
+    if !head.is_branch() {
+        return None;
+    }
+    head.shorthand().map(str::to_string)
 }
 
 pub fn compute_status(worktree_path: &Path) -> Result<WorktreeStatus> {
@@ -491,14 +506,6 @@ pub fn compute_status(worktree_path: &Path) -> Result<WorktreeStatus> {
     out.behind = behind as u32;
 
     Ok(out)
-}
-
-fn branch_name_of_head(repo: &Repository) -> Option<String> {
-    let head = repo.head().ok()?;
-    if !head.is_branch() {
-        return None;
-    }
-    head.shorthand().map(str::to_string)
 }
 
 fn ahead_behind(repo: &Repository) -> Result<(usize, usize)> {
@@ -709,7 +716,7 @@ mod tests {
         let wts = list_worktrees(&dir).unwrap();
         assert_eq!(wts.len(), 1);
         assert!(wts[0].is_primary);
-        assert_eq!(wts[0].branch, "main");
+        assert_eq!(wts[0].head, HeadRef::Branch("main".to_string()));
     }
 
     #[test]
@@ -726,9 +733,56 @@ mod tests {
         );
         let wts = list_worktrees(&dir).unwrap();
         assert_eq!(wts.len(), 2);
-        let branches: Vec<_> = wts.iter().map(|w| w.branch.as_str()).collect();
+        let branches: Vec<_> = wts.iter().filter_map(|w| w.branch_name()).collect();
         assert!(branches.contains(&"main"));
         assert!(branches.contains(&"feature"));
+    }
+
+    #[test]
+    fn list_worktrees_includes_detached_linked_worktree() {
+        // A linked worktree on a detached HEAD must still appear in the
+        // sidebar as `HeadRef::Detached(<short-oid>)` — not be silently
+        // dropped. Otherwise users mid-rebase or mid-bisect lose access to
+        // the worktree from grove.
+        let dir = temp_dir();
+        init_repo(&dir);
+        let head_oid = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("rev-parse");
+        let head_oid = String::from_utf8(head_oid.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        let linked = dir.parent().unwrap().join(format!(
+            "{}-detached",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        // `--detach` checks out the commit without creating a branch.
+        run_git_test(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                linked.to_str().unwrap(),
+                &head_oid,
+            ],
+        );
+
+        let wts = list_worktrees(&dir).unwrap();
+        let detached: Vec<_> = wts
+            .iter()
+            .filter(|w| matches!(w.head, HeadRef::Detached(_)))
+            .collect();
+        assert_eq!(detached.len(), 1, "expected one detached worktree: {wts:?}");
+        let HeadRef::Detached(oid) = &detached[0].head else {
+            panic!("not detached")
+        };
+        assert!(head_oid.starts_with(oid.as_str()), "{head_oid} vs {oid}");
+        assert!(detached[0].branch_name().is_none());
     }
 
     #[test]
@@ -786,7 +840,7 @@ mod tests {
         create_worktree(&dir, "feat/x", &new_path, "main").unwrap();
         let wts = list_worktrees(&dir).unwrap();
         assert_eq!(wts.len(), 2);
-        assert!(wts.iter().any(|w| w.branch == "feat/x"));
+        assert!(wts.iter().any(|w| w.branch_name() == Some("feat/x")));
 
         remove_worktree(&dir, &new_path).unwrap();
         let wts = list_worktrees(&dir).unwrap();

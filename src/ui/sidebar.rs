@@ -63,7 +63,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                 let line = worktree_line(
                     marker,
                     branch_glyph,
-                    &wt.branch,
+                    &wt.label(),
                     wt.status.as_ref(),
                     wt.pr.as_ref(),
                     agent,
@@ -305,7 +305,8 @@ mod tests {
     #[test]
     fn long_branch_name_is_truncated_when_badges_present() {
         let mut app = AppState::fixture();
-        app.repos[0].worktrees[1].branch = "feature/this-is-a-very-long-branch".to_string();
+        app.repos[0].worktrees[1].head =
+            crate::model::HeadRef::Branch("feature/this-is-a-very-long-branch".to_string());
         app.repos[0].worktrees[1].status = Some(WorktreeStatus {
             staged: 4,
             ahead: 2,

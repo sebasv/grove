@@ -283,6 +283,11 @@ fn dispatch_event(event: Event, app: &mut AppState, tx: &EventSender) -> bool {
             handle_paste(text, app);
         }
         Event::RepoDirty(repo_idx) => {
+            // Re-list worktrees first so a `git switch`, `git worktree add`,
+            // or `git worktree remove` performed in a terminal is picked up
+            // by the sidebar — without this, only status badges refresh and
+            // the branch label silently lies.
+            app.reconcile_worktrees(repo_idx);
             refresh_repo_statuses(repo_idx, app, tx);
             // Re-trigger diff refresh for the active worktree if it's in
             // this repo and currently viewing the Diff pane.
@@ -854,10 +859,14 @@ fn poll_github_prs(app: &AppState, tx: &EventSender, client: &std::sync::Arc<oct
             continue;
         };
         for (w, wt) in repo.worktrees.iter().enumerate() {
+            // Detached HEAD has no branch — skip PR polling for it.
+            let Some(branch) = wt.branch_name() else {
+                continue;
+            };
             github::spawn_pr_fetch(
                 client.clone(),
                 owner_repo.clone(),
-                wt.branch.clone(),
+                branch.to_string(),
                 (r, w),
                 tx.clone(),
             );
