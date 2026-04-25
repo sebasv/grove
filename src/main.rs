@@ -24,6 +24,7 @@ use crossterm::{
         KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
+    style::{Attribute, SetAttribute},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use portable_pty::PtySize;
@@ -987,6 +988,14 @@ fn init_terminal() -> Result<Tui> {
     execute!(
         io::stdout(),
         EnterAlternateScreen,
+        // Force every SGR attribute back to default before ratatui starts
+        // diff-rendering.  ratatui assumes the terminal begins each draw
+        // with cleared attributes; if the calling shell (e.g. powerlevel10k
+        // on macOS Terminal) left DIM or BOLD active, cells written in the
+        // first frame inherit that state and stay stuck — only cells the
+        // cursor later moves over get re-emitted with a fresh state, so
+        // visited rows look brighter than untouched ones.
+        SetAttribute(Attribute::Reset),
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
