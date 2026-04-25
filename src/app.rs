@@ -34,6 +34,10 @@ pub struct AppState {
     /// is true and `github_authenticated` is false.  Cached to avoid
     /// shelling out to `git remote` on every render.
     pub has_github_repo: bool,
+    /// Set when `config.toml` exists but failed to parse.  Grove falls
+    /// back to defaults so the user still gets a working TUI; this
+    /// message surfaces in the sidebar so the typo isn't silent.
+    pub config_error: Option<String>,
 }
 
 /// Cached rects from the most recent `ui::render` pass.  Used by mouse
@@ -142,6 +146,69 @@ impl WorktreeTerminals {
     pub fn scroll_end(&mut self) {
         self.scroll_offset = 0;
     }
+
+    /// Aggregate per-worktree agent state across every terminal in this
+    /// worktree.  Precedence: bell (waiting on user) → thinking → idle.
+    ///
+    /// Two signals feed "thinking":
+    /// 1. The shell's window title starts with a braille spinner glyph
+    ///    (Claude Code, gum, oh-my-zsh — anything that uses U+2800–U+28FF
+    ///    as a busy indicator).  This is precise: the spinner is ONLY
+    ///    rendered while the agent is producing output.
+    /// 2. Falling-edge fallback: a TUI that doesn't set a title is
+    ///    treated as "thinking" for `fallback_window` after each PTY
+    ///    write.  Noisy but better than nothing for shells that don't
+    ///    announce themselves.
+    pub fn agent_state(&self, fallback_window: std::time::Duration) -> AgentState {
+        let mut bell = false;
+        let mut thinking = false;
+        let now = std::time::Instant::now();
+        for t in &self.list {
+            let snap = t.activity_snapshot();
+            if snap.bell_pending {
+                bell = true;
+            }
+            if crate::terminal::title_is_thinking(&snap.title) {
+                thinking = true;
+                continue;
+            }
+            // Fallback: only consult last_output_at when no title is
+            // available; otherwise the title is authoritative ("idle"
+            // titles wouldn't get overridden by a recent output blip).
+            if snap.title.is_empty() {
+                if let Some(last) = snap.last_output_at {
+                    if now.saturating_duration_since(last) <= fallback_window {
+                        thinking = true;
+                    }
+                }
+            }
+        }
+        if bell {
+            AgentState::Waiting
+        } else if thinking {
+            AgentState::Thinking
+        } else {
+            AgentState::Idle
+        }
+    }
+
+    /// Clear the bell-pending flag on every terminal in this worktree.
+    /// Called when the user activates the worktree so the indicator
+    /// disappears as soon as the user has acknowledged it.
+    pub fn clear_bells(&self) {
+        for t in &self.list {
+            t.clear_bell();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentState {
+    Idle,
+    /// Recent PTY output — something is happening / "thinking".
+    Thinking,
+    /// BEL received and not yet acknowledged — needs attention.
+    Waiting,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -481,6 +548,7 @@ impl AppState {
             activity,
             github_authenticated: false,
             has_github_repo,
+            config_error: None,
         })
     }
 
@@ -1519,6 +1587,11 @@ impl AppState {
                         branch: wt.branch.clone(),
                     })
                 });
+                // Acknowledge any pending bells in this worktree's
+                // terminals — the user is now looking at them.
+                if let Some(ts) = self.terminals.get(&(repo, worktree)) {
+                    ts.clear_bells();
+                }
             }
             SidebarCursor::Repo(idx) => {
                 let path = self.repos[idx].root_path.clone();
@@ -1798,6 +1871,7 @@ impl AppState {
             },
             github_authenticated: false,
             has_github_repo: false,
+            config_error: None,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
         state
@@ -1819,6 +1893,7 @@ impl AppState {
             activity: ActivityState::default(),
             github_authenticated: false,
             has_github_repo: false,
+            config_error: None,
         }
     }
 }

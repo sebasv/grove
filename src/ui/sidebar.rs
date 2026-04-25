@@ -1,10 +1,10 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{AppState, SidebarCursor};
+use crate::app::{AgentState, AppState, SidebarCursor};
 use crate::model::WorktreeStatus;
 use crate::ui::badges::{append_pr_spans, badge_spans, badge_width};
 
@@ -13,6 +13,10 @@ const DIVIDER: &str = "───────────────────
 /// Columns consumed by the fixed prefix of a worktree row: marker + 2 spaces
 /// + glyph + space. Everything after this is branch + padding + badges.
 const WORKTREE_PREFIX: usize = 5;
+/// How long after the last PTY byte do we still call a worktree
+/// "thinking" in the sidebar.  Long enough to cover Claude Code's
+/// inter-token gaps, short enough that an idle shell doesn't linger.
+const THINKING_WINDOW: std::time::Duration = std::time::Duration::from_millis(2500);
 
 pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     let cursor = app.ui.cursor;
@@ -51,14 +55,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
                         worktree: j,
                     });
                 let marker = if is_here { "▸" } else { " " };
+                let agent = app
+                    .terminals
+                    .get(&(i, j))
+                    .map(|ts| ts.agent_state(THINKING_WINDOW))
+                    .unwrap_or(AgentState::Idle);
                 let line = worktree_line(
                     marker,
                     branch_glyph,
                     &wt.branch,
                     wt.status.as_ref(),
                     wt.pr.as_ref(),
+                    agent,
                     is_here,
                     highlight,
+                    app.theme.warn,
+                    app.theme.dim,
                 );
                 lines.push(line);
             }
@@ -89,6 +101,25 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         ));
     }
 
+    // Surface config-parse errors: grove fell back to defaults, so the
+    // user's worktrees may be missing.  Without this hint, a typo in the
+    // TOML would silently wipe their repo list.
+    if let Some(err) = &app.config_error {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            " ⚠ config.toml: parse error",
+            Style::default().fg(app.theme.warn),
+        ));
+        lines.push(Line::styled(
+            format!("   {}", first_line(err, SIDEBAR_WIDTH.saturating_sub(3))),
+            Style::default().fg(app.theme.dim),
+        ));
+        lines.push(Line::styled(
+            "   using defaults; see grove.log",
+            Style::default().fg(app.theme.dim),
+        ));
+    }
+
     // Activity footer — last row of the sidebar.  Shows any background
     // tasks in flight so the user understands why a badge or list is
     // about to change.  Idle state is blank.
@@ -104,18 +135,39 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worktree_line(
     marker: &str,
     branch_glyph: &str,
     branch: &str,
     status: Option<&WorktreeStatus>,
     pr: Option<&crate::model::PrStatus>,
+    agent: AgentState,
     is_cursor: bool,
     highlight: Style,
+    warn: Color,
+    dim: Color,
 ) -> Line<'static> {
     let prefix = format!("{marker}  {branch_glyph} ");
     let mut status_spans = status.map(badge_spans).unwrap_or_default();
     append_pr_spans(pr, &mut status_spans);
+    // Agent indicator goes leftmost in the badge cluster: bell beats
+    // thinking; idle is silent so quiet worktrees don't visually shout.
+    let agent_span = match agent {
+        AgentState::Waiting => Some(Span::styled("!", Style::default().fg(warn))),
+        AgentState::Thinking => Some(Span::styled("…", Style::default().fg(dim))),
+        AgentState::Idle => None,
+    };
+    if let Some(span) = agent_span {
+        // Insert at front of status cluster, with a gap to its right.
+        let mut prefixed: Vec<Span<'static>> = Vec::with_capacity(status_spans.len() + 2);
+        prefixed.push(span);
+        if !status_spans.is_empty() {
+            prefixed.push(Span::raw(" "));
+        }
+        prefixed.extend(status_spans);
+        status_spans = prefixed;
+    }
     let status_cols = if status_spans.is_empty() {
         0
     } else {
@@ -147,6 +199,11 @@ fn worktree_line(
     } else {
         line
     }
+}
+
+fn first_line(s: &str, max_cols: usize) -> String {
+    let line = s.lines().next().unwrap_or("");
+    truncate(line, max_cols)
 }
 
 fn truncate(s: &str, max_cols: usize) -> String {
@@ -323,6 +380,26 @@ mod tests {
         app.has_github_repo = true;
         let out = render_at_size(&app, 40, 30);
         assert!(!out.contains("not authenticated"));
+    }
+
+    #[test]
+    fn config_error_warning_appears_when_set() {
+        let mut app = AppState::fixture();
+        app.config_error = Some("expected `]` near line 3".to_string());
+        let out = render_at_size(&app, 40, 30);
+        assert!(
+            out.contains("config.toml: parse error"),
+            "expected config warning in sidebar:\n{out}"
+        );
+        assert!(out.contains("using defaults"));
+    }
+
+    #[test]
+    fn config_error_warning_hidden_when_unset() {
+        let mut app = AppState::fixture();
+        app.config_error = None;
+        let out = render_at_size(&app, 40, 30);
+        assert!(!out.contains("config.toml"));
     }
 
     #[test]

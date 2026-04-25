@@ -69,11 +69,18 @@ impl Config {
         toml::from_str(&content).with_context(|| format!("parsing config at {}", path.display()))
     }
 
-    pub fn load_or_default(path: &Path) -> Result<Self> {
-        if path.exists() {
-            Self::load(path)
-        } else {
-            Ok(Self::default())
+    /// Load the config, falling back to defaults when the file is
+    /// missing OR fails to parse.  In the parse-error case the second
+    /// tuple element carries a human-readable message; callers surface
+    /// it (sidebar warning + log) so a typo in the TOML doesn't silently
+    /// wipe the user's repo list.
+    pub fn load_or_default_lossy(path: &Path) -> (Self, Option<String>) {
+        if !path.exists() {
+            return (Self::default(), None);
+        }
+        match Self::load(path) {
+            Ok(cfg) => (cfg, None),
+            Err(err) => (Self::default(), Some(format!("{err:#}"))),
         }
     }
 
@@ -127,6 +134,43 @@ mod tests {
         let serialized = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn load_or_default_lossy_returns_defaults_for_missing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "grove-cfg-missing-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("config.toml");
+        let (cfg, err) = Config::load_or_default_lossy(&path);
+        assert_eq!(cfg, Config::default());
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn load_or_default_lossy_falls_back_on_parse_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "grove-cfg-bad-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // Missing closing quote: malformed TOML.
+        std::fs::write(&path, "[general\ndefault_base_branch = \"main\n").unwrap();
+        let (cfg, err) = Config::load_or_default_lossy(&path);
+        assert_eq!(cfg, Config::default());
+        let msg = err.expect("expected parse error message");
+        assert!(
+            msg.contains("parsing config"),
+            "expected message to mention parsing, got: {msg}"
+        );
     }
 
     #[test]
