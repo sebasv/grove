@@ -21,7 +21,8 @@ use clap::Parser;
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+        MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     style::{Attribute, SetAttribute},
@@ -1051,10 +1052,24 @@ fn init_terminal() -> Result<Tui> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
+    // Best-effort: ask the terminal to disambiguate keys via the kitty
+    // keyboard protocol.  Without this, terminals send the same byte
+    // (\r) for both Enter and Shift+Enter, so crossterm has nothing to
+    // distinguish them and grove can never forward Shift+Enter as a
+    // newline.  Terminals that don't support the protocol silently
+    // ignore the request, so we tolerate failure.
+    let _ = execute!(
+        io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     Ok(Terminal::new(CrosstermBackend::new(io::stdout()))?)
 }
 
 fn restore_terminal() -> Result<()> {
+    // Pop the keyboard-enhancement flags first so the user's outer
+    // shell isn't left in disambiguate mode if grove pushed it.  Best
+    // effort — pop on a terminal that didn't support push is a no-op.
+    let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     execute!(
         io::stdout(),
         DisableBracketedPaste,
