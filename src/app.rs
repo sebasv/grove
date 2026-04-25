@@ -227,6 +227,18 @@ pub enum Modal {
     /// Results of a `grove <dir>` scan waiting for the user to pick
     /// which repos to add.
     DiscoveredRepos(DiscoveredReposModal),
+    /// Tail of grove's log file — last few hundred lines, scrollable.
+    /// Surfaces background warnings (failed-to-delete-branch etc.) that
+    /// would otherwise live silently in `~/.cache/grove/grove.log`.
+    ViewLog(LogModal),
+}
+
+#[derive(Debug, Clone)]
+pub struct LogModal {
+    pub lines: Vec<String>,
+    pub scroll: usize,
+    /// `None` when the log file doesn't exist yet (first run, no warnings).
+    pub source: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +421,13 @@ pub enum AppMessage {
     CompletionUp,
     CompletionDown,
     CompletionAccept,
+    OpenLogViewer,
+    LogScrollUp,
+    LogScrollDown,
+    LogScrollPageUp,
+    LogScrollPageDown,
+    LogScrollTop,
+    LogScrollBottom,
     HelpScrollUp,
     HelpScrollDown,
     /// A `grove <dir>` scan finished; populate the DiscoveredRepos modal.
@@ -551,6 +570,13 @@ impl AppState {
                 }
             }
             AppMessage::CompletionAccept => self.accept_completion(),
+            AppMessage::OpenLogViewer => self.open_log_viewer(),
+            AppMessage::LogScrollUp => self.scroll_log(-1),
+            AppMessage::LogScrollDown => self.scroll_log(1),
+            AppMessage::LogScrollPageUp => self.scroll_log(-20),
+            AppMessage::LogScrollPageDown => self.scroll_log(20),
+            AppMessage::LogScrollTop => self.scroll_log(i32::MIN),
+            AppMessage::LogScrollBottom => self.scroll_log(i32::MAX),
             AppMessage::HelpScrollUp => {
                 self.ui.help_scroll = self.ui.help_scroll.saturating_sub(1);
             }
@@ -1335,6 +1361,37 @@ impl AppState {
                 Some(Modal::Help)
             }
             other => other,
+        };
+    }
+
+    fn open_log_viewer(&mut self) {
+        if self.ui.modal.is_some() {
+            return;
+        }
+        // Cap the read at 256 KB.  At ~120 columns / line that's well over
+        // 1500 lines — plenty of recent context, with bounded memory and
+        // a snappy open even on multi-MB log files.
+        let lines = crate::paths::read_log_tail(256 * 1024).unwrap_or_default();
+        let scroll = lines.len().saturating_sub(1); // open scrolled to the tail
+        self.ui.modal = Some(Modal::ViewLog(LogModal {
+            lines,
+            scroll,
+            source: crate::paths::log_path(),
+        }));
+    }
+
+    fn scroll_log(&mut self, delta: i32) {
+        let Some(Modal::ViewLog(m)) = &mut self.ui.modal else {
+            return;
+        };
+        let max = m.lines.len().saturating_sub(1);
+        m.scroll = if delta == i32::MIN {
+            0
+        } else if delta == i32::MAX {
+            max
+        } else {
+            let cur = m.scroll as i64;
+            cur.saturating_add(delta as i64).clamp(0, max as i64) as usize
         };
     }
 

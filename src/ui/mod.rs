@@ -4,6 +4,7 @@ mod confirm;
 pub mod diff;
 mod discovered;
 mod help;
+mod log_view;
 mod main_pane;
 mod sidebar;
 pub mod text_input;
@@ -74,6 +75,9 @@ pub fn render(frame: &mut Frame, app: &AppState) -> RenderedLayout {
             }
             Modal::DiscoveredRepos(state) => {
                 discovered::render(frame, frame.area(), state);
+            }
+            Modal::ViewLog(state) => {
+                log_view::render(frame, frame.area(), state);
             }
         }
     }
