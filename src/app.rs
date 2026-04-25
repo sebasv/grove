@@ -148,27 +148,44 @@ impl WorktreeTerminals {
     }
 
     /// Aggregate per-worktree agent state across every terminal in this
-    /// worktree.  Bell beats thinking beats idle: any waiting shell makes
-    /// the whole worktree "waiting", and any recently-active shell makes
-    /// it "thinking".
-    pub fn agent_state(&self, thinking_window: std::time::Duration) -> AgentState {
+    /// worktree.  Precedence: bell (waiting on user) → thinking → idle.
+    ///
+    /// Two signals feed "thinking":
+    /// 1. The shell's window title starts with a braille spinner glyph
+    ///    (Claude Code, gum, oh-my-zsh — anything that uses U+2800–U+28FF
+    ///    as a busy indicator).  This is precise: the spinner is ONLY
+    ///    rendered while the agent is producing output.
+    /// 2. Falling-edge fallback: a TUI that doesn't set a title is
+    ///    treated as "thinking" for `fallback_window` after each PTY
+    ///    write.  Noisy but better than nothing for shells that don't
+    ///    announce themselves.
+    pub fn agent_state(&self, fallback_window: std::time::Duration) -> AgentState {
         let mut bell = false;
-        let mut active = false;
+        let mut thinking = false;
         let now = std::time::Instant::now();
         for t in &self.list {
             let snap = t.activity_snapshot();
             if snap.bell_pending {
                 bell = true;
             }
-            if let Some(last) = snap.last_output_at {
-                if now.saturating_duration_since(last) <= thinking_window {
-                    active = true;
+            if crate::terminal::title_is_thinking(&snap.title) {
+                thinking = true;
+                continue;
+            }
+            // Fallback: only consult last_output_at when no title is
+            // available; otherwise the title is authoritative ("idle"
+            // titles wouldn't get overridden by a recent output blip).
+            if snap.title.is_empty() {
+                if let Some(last) = snap.last_output_at {
+                    if now.saturating_duration_since(last) <= fallback_window {
+                        thinking = true;
+                    }
                 }
             }
         }
         if bell {
             AgentState::Waiting
-        } else if active {
+        } else if thinking {
             AgentState::Thinking
         } else {
             AgentState::Idle

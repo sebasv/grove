@@ -100,15 +100,15 @@ Each worktree row carries up to two clusters of badges: git working-tree state (
 | `↑N` (dim) | `N` commits ahead of upstream |
 | `↓N` (dim) | `N` commits behind upstream |
 
-**Agent activity.** When you've got an interactive shell running (Claude Code, an LLM CLI, an `ssh` session, anything that uses readline), grove surfaces what's happening:
+**Agent activity.** Grove watches each shell's window-title and bell signals to surface what's happening per worktree:
 
 | Badge | Meaning |
 |-------|---------|
 | `!` (warn) | A shell rang the terminal bell (BEL) — likely waiting for input. Cleared when you focus the worktree. |
-| `…` (dim) | Shell wrote output in the last few seconds — "thinking" / actively producing output. |
+| `…` (dim) | Shell signalled "thinking": its window title starts with a braille spinner glyph (Claude Code, `gum`, oh-my-zsh prompts), or — for shells that don't set a title — it wrote PTY output in the last few seconds. |
 | _(none)_ | Idle |
 
-The bell signal is the high-confidence "needs attention" indicator since most readline-based prompts ring it.
+The thinking signal is precise for any TUI that uses an OSC 0/2 spinner — for Claude Code that's the `⠂ <prompt>` cycle while streaming, switching to `✳ <prompt>` once done. Bell is the high-confidence "needs attention" indicator since most readline-based prompts ring it.
 
 **Pull request and CI.** Pulled from GitHub when grove can find a token (`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login`). When unauthenticated and at least one repo has a GitHub remote, the sidebar footer shows `⚠ PRs: not authenticated`.
 
