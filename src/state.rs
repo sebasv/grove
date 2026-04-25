@@ -1,10 +1,14 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+// v1 keyed `active_worktree` by `(repo, branch)`. v2 keys it by absolute
+// `path`, because a worktree's identity is its directory — branches change
+// underneath (`git switch`) but paths don't. v1 state is dropped on first
+// load; users lose the persisted active selection one time.
+const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedState {
@@ -21,10 +25,11 @@ pub struct PersistedUi {
     pub expanded: HashMap<String, bool>,
 }
 
+/// Stable identity for a worktree across grove sessions. Path is the right
+/// key because it survives branch switches inside the worktree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveWorktreeId {
-    pub repo: String,
-    pub branch: String,
+    pub path: PathBuf,
 }
 
 pub fn load(path: &Path) -> Result<Option<PersistedState>> {
@@ -78,8 +83,7 @@ mod tests {
             schema_version: CURRENT_SCHEMA_VERSION,
             ui: PersistedUi {
                 active_worktree: Some(ActiveWorktreeId {
-                    repo: "grove".to_string(),
-                    branch: "feat/sidebar".to_string(),
+                    path: PathBuf::from("/home/u/dev/grove-feat-sidebar"),
                 }),
                 expanded,
             },

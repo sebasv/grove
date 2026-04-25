@@ -108,10 +108,16 @@ fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals)
 }
 
 fn main_pane_title(app: &AppState) -> String {
-    match &app.ui.active_worktree {
-        Some(id) => format!(" {} · {} ", id.repo, id.branch),
-        None => " grove ".to_string(),
-    }
+    let Some((r, w)) = app.active_worktree_id() else {
+        return " grove ".to_string();
+    };
+    let Some(repo) = app.repos.get(r) else {
+        return " grove ".to_string();
+    };
+    let Some(wt) = repo.worktrees.get(w) else {
+        return " grove ".to_string();
+    };
+    format!(" {} · {} ", repo.name, wt.label())
 }
 
 fn render_placeholder(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -150,7 +156,7 @@ fn active_lines_without_terminal(app: &AppState, r: usize, w: usize) -> Vec<Line
         ]),
         Line::from(vec![
             Span::raw("  branch:  "),
-            Span::styled(wt.branch.clone(), bold),
+            Span::styled(wt.label(), bold),
         ]),
         Line::from(format!("  path:    {}", wt.path.display())),
         Line::from(""),
@@ -196,10 +202,10 @@ mod tests {
     #[test]
     fn stale_active_worktree_shows_prompt_not_panic() {
         use crate::state::ActiveWorktreeId;
+        use std::path::PathBuf;
         let mut app = AppState::fixture();
         app.ui.active_worktree = Some(ActiveWorktreeId {
-            repo: "gone-repo".to_string(),
-            branch: "gone-branch".to_string(),
+            path: PathBuf::from("/nonexistent/path"),
         });
         let output = render_to_string(&app);
         assert!(output.contains("Select a worktree"));

@@ -746,12 +746,9 @@ impl AppState {
     pub fn active_worktree_id(&self) -> Option<WorktreeId> {
         let id = self.ui.active_worktree.as_ref()?;
         self.repos.iter().enumerate().find_map(|(i, repo)| {
-            if repo.name != id.repo {
-                return None;
-            }
             repo.worktrees
                 .iter()
-                .position(|wt| wt.branch == id.branch)
+                .position(|wt| wt.path == id.path)
                 .map(|j| (i, j))
         })
     }
@@ -830,13 +827,17 @@ impl AppState {
 
         // Figure out whether a regular `-d` would succeed, so the modal
         // shows `[d]` or `[D]` depending on the branch's merge state.
-        // libgit2 does this offline, no network.
-        let variant =
-            if git::is_branch_merged(&repo_ref.root_path, &wt.branch, &repo_ref.base_branch) {
-                DeleteVariant::Merged
-            } else {
+        // libgit2 does this offline, no network. Detached HEAD has no
+        // branch to delete, so treat it as `Merged` — the delete-branch
+        // path is a no-op for that case (no branch name to pass).
+        let variant = match wt.branch_name() {
+            Some(branch)
+                if !git::is_branch_merged(&repo_ref.root_path, branch, &repo_ref.base_branch) =>
+            {
                 DeleteVariant::Unmerged
-            };
+            }
+            _ => DeleteVariant::Merged,
+        };
         let pr_number = wt.pr.as_ref().and_then(|p| {
             matches!(
                 p.state,
@@ -879,11 +880,12 @@ impl AppState {
         }
 
         // Collect branch + repo_root before we invalidate indices with
-        // `try_remove_worktree`.
+        // `try_remove_worktree`. Detached HEAD has no branch to delete —
+        // skip the branch-deletion step regardless of the user's choice.
         let Some((branch, repo_root)) = self.repos.get(id.0).and_then(|repo| {
             repo.worktrees
                 .get(id.1)
-                .map(|wt| (wt.branch.clone(), repo.root_path.clone()))
+                .map(|wt| (wt.branch_name().map(str::to_string), repo.root_path.clone()))
         }) else {
             return;
         };
@@ -893,16 +895,16 @@ impl AppState {
             return;
         }
 
-        match choice {
-            DeleteChoice::KeepBranch => {}
-            DeleteChoice::Delete => {
+        match (choice, branch) {
+            (DeleteChoice::KeepBranch, _) | (_, None) => {}
+            (DeleteChoice::Delete, Some(branch)) => {
                 if let Err(err) = git::delete_branch(&repo_root, &branch) {
                     crate::paths::log_warning(&format!(
                         "failed to delete branch {branch}: {err:#}"
                     ));
                 }
             }
-            DeleteChoice::ForceDelete => {
+            (DeleteChoice::ForceDelete, Some(branch)) => {
                 if let Err(err) = git::force_delete_branch(&repo_root, &branch) {
                     crate::paths::log_warning(&format!(
                         "failed to force-delete branch {branch}: {err:#}"
@@ -1155,7 +1157,36 @@ impl AppState {
             .collect();
         self.main_views = new_views;
 
-        // ActiveWorktreeId is keyed by repo+branch, not by index, so no remap needed.
+        // ActiveWorktreeId is path-keyed, so no remap is needed for it — the
+        // path it points at either still exists (active stays valid) or
+        // doesn't (the next call to `active_worktree_id` returns `None`).
+    }
+
+    /// Re-list a repo's worktrees from disk and reconcile in-memory state.
+    /// Called from the FS-watcher event handler so a `git switch`, `git
+    /// worktree add`, or `git worktree remove` performed in a terminal is
+    /// reflected in the sidebar without requiring a manual refresh. State
+    /// keyed by path (terminals, diffs, main views, active selection)
+    /// survives the reconcile.
+    pub fn reconcile_worktrees(&mut self, repo_idx: usize) {
+        let Some(repo) = self.repos.get(repo_idx) else {
+            return;
+        };
+        let new_list = match git::list_worktrees(&repo.root_path) {
+            Ok(list) => list,
+            Err(err) => {
+                crate::paths::log_warning(&format!(
+                    "failed to re-list worktrees for {}: {err:#}",
+                    repo.name
+                ));
+                return;
+            }
+        };
+        if new_list == self.repos[repo_idx].worktrees {
+            return; // no-op when nothing changed (HEADs and paths match)
+        }
+        self.remap_worktree_state(repo_idx, &new_list);
+        self.repos[repo_idx].worktrees = new_list;
     }
 
     fn try_remove_worktree(&mut self, id: WorktreeId) -> Result<()> {
@@ -1226,13 +1257,15 @@ impl AppState {
             .collect();
         self.main_views = views;
 
-        // If the removed worktree was active, clear; if a later one shifted, update by branch identity
-        // (ActiveWorktreeId is branch-based so no index fixup needed — it stays valid or becomes stale).
+        // If the removed worktree was active, clear it. ActiveWorktreeId is
+        // path-keyed so a re-list that shuffles indices doesn't affect it.
         if let Some(ref id) = self.ui.active_worktree.clone() {
-            if let Some(repo) = self.repos.get(r) {
-                if repo.name == id.repo && !repo.worktrees.iter().any(|wt| wt.branch == id.branch) {
-                    self.ui.active_worktree = None;
-                }
+            let still_present = self
+                .repos
+                .iter()
+                .any(|repo| repo.worktrees.iter().any(|wt| wt.path == id.path));
+            if !still_present {
+                self.ui.active_worktree = None;
             }
         }
 
@@ -1316,6 +1349,11 @@ impl AppState {
         new_config.save(&self.config_path)?;
         self.config = new_config;
 
+        let removed_paths: std::collections::HashSet<PathBuf> = self.repos[idx]
+            .worktrees
+            .iter()
+            .map(|wt| wt.path.clone())
+            .collect();
         let path_key = self.repos[idx].root_path.to_string_lossy().into_owned();
         self.repos.remove(idx);
         // Shift the activity scheduler's last-fetched timeline so subsequent
@@ -1327,7 +1365,11 @@ impl AppState {
         self.activity.resize_repos(self.repos.len());
         self.has_github_repo = any_github_remote(&self.repos);
         self.ui.expanded.remove(&path_key);
-        self.ui.active_worktree = self.ui.active_worktree.take().filter(|id| id.repo != name);
+        self.ui.active_worktree = self
+            .ui
+            .active_worktree
+            .take()
+            .filter(|id| !removed_paths.contains(&id.path));
 
         // Drop terminals for the removed repo and shift indices for later repos.
         let surviving: HashMap<WorktreeId, WorktreeTerminals> = self
@@ -1398,16 +1440,13 @@ impl AppState {
     pub fn apply_persisted(&mut self, persisted: PersistedState) {
         self.ui.expanded = persisted.ui.expanded;
         if let Some(active) = persisted.ui.active_worktree {
-            // Validate the branch still exists, and resolve its current indices for
-            // cursor placement. Indices may differ from the previous session if
-            // worktrees were added or removed.
+            // Re-resolve the worktree's current indices for cursor placement.
+            // Identity is the path; indices may differ from the previous
+            // session if worktrees were added, removed, or reordered.
             let found = self.repos.iter().enumerate().find_map(|(i, repo)| {
-                if repo.name != active.repo {
-                    return None;
-                }
                 repo.worktrees
                     .iter()
-                    .position(|wt| wt.branch == active.branch)
+                    .position(|wt| wt.path == active.path)
                     .map(|j| (i, j))
             });
             if let Some((r, w)) = found {
@@ -1515,8 +1554,7 @@ impl AppState {
             SidebarCursor::Worktree { repo, worktree } => {
                 self.ui.active_worktree = self.repos.get(repo).and_then(|r| {
                     r.worktrees.get(worktree).map(|wt| ActiveWorktreeId {
-                        repo: r.name.clone(),
-                        branch: wt.branch.clone(),
+                        path: wt.path.clone(),
                     })
                 });
             }
@@ -1534,8 +1572,7 @@ impl AppState {
         if let Some(SidebarCursor::Worktree { repo, worktree }) = self.ui.cursor {
             self.ui.active_worktree = self.repos.get(repo).and_then(|r| {
                 r.worktrees.get(worktree).map(|wt| ActiveWorktreeId {
-                    repo: r.name.clone(),
-                    branch: wt.branch.clone(),
+                    path: wt.path.clone(),
                 })
             });
         }
@@ -1670,8 +1707,11 @@ fn generate_unique_local_name(
     branch_name: &str,
     worktree_root: Option<&std::path::Path>,
 ) -> Result<String> {
-    let existing: std::collections::HashSet<&str> =
-        repo.worktrees.iter().map(|wt| wt.branch.as_str()).collect();
+    let existing: std::collections::HashSet<&str> = repo
+        .worktrees
+        .iter()
+        .filter_map(|wt| wt.branch_name())
+        .collect();
     for _ in 0..5 {
         let slug = random_slug();
         let candidate = format!("{branch_name}-{slug}");
@@ -1739,21 +1779,21 @@ impl AppState {
                     base_branch: "main".to_string(),
                     worktrees: vec![
                         Worktree {
-                            branch: "main".to_string(),
+                            head: crate::model::HeadRef::Branch("main".to_string()),
                             path: PathBuf::from("/Users/sebas/dev/grove"),
                             is_primary: true,
                             pr: None,
                             status: None,
                         },
                         Worktree {
-                            branch: "feat/sidebar".to_string(),
+                            head: crate::model::HeadRef::Branch("feat/sidebar".to_string()),
                             path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
                             is_primary: false,
                             pr: None,
                             status: None,
                         },
                         Worktree {
-                            branch: "fix/deps".to_string(),
+                            head: crate::model::HeadRef::Branch("fix/deps".to_string()),
                             path: PathBuf::from("/Users/sebas/dev/grove-fix-deps"),
                             is_primary: false,
                             pr: None,
@@ -1767,14 +1807,14 @@ impl AppState {
                     base_branch: "main".to_string(),
                     worktrees: vec![
                         Worktree {
-                            branch: "main".to_string(),
+                            head: crate::model::HeadRef::Branch("main".to_string()),
                             path: PathBuf::from("/Users/sebas/dotfiles"),
                             is_primary: true,
                             pr: None,
                             status: None,
                         },
                         Worktree {
-                            branch: "wip/zsh".to_string(),
+                            head: crate::model::HeadRef::Branch("wip/zsh".to_string()),
                             path: PathBuf::from("/Users/sebas/dotfiles-wip-zsh"),
                             is_primary: false,
                             pr: None,
@@ -1842,8 +1882,7 @@ mod tests {
         assert_eq!(
             app.ui.active_worktree,
             Some(ActiveWorktreeId {
-                repo: "grove".into(),
-                branch: "main".into()
+                path: PathBuf::from("/Users/sebas/dev/grove"),
             })
         );
         app.update(AppMessage::MoveCursor(Direction::Down));
@@ -1857,8 +1896,7 @@ mod tests {
         assert_eq!(
             app.ui.active_worktree,
             Some(ActiveWorktreeId {
-                repo: "grove".into(),
-                branch: "feat/sidebar".into()
+                path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
             })
         );
     }
@@ -1933,8 +1971,7 @@ mod tests {
         assert_eq!(
             app.ui.active_worktree,
             Some(ActiveWorktreeId {
-                repo: "grove".into(),
-                branch: "fix/deps".into()
+                path: PathBuf::from("/Users/sebas/dev/grove-fix-deps"),
             })
         );
     }
@@ -1968,8 +2005,7 @@ mod tests {
         assert_eq!(
             restored.ui.active_worktree,
             Some(ActiveWorktreeId {
-                repo: "grove".into(),
-                branch: "fix/deps".into()
+                path: PathBuf::from("/Users/sebas/dev/grove-fix-deps"),
             })
         );
         assert_eq!(
@@ -1982,20 +2018,40 @@ mod tests {
     }
 
     #[test]
-    fn persisted_active_is_dropped_when_branch_no_longer_exists() {
+    fn persisted_active_is_dropped_when_path_no_longer_exists() {
         let mut app = AppState::fixture();
         let persisted = PersistedState {
             schema_version: crate::state::current_schema_version(),
             ui: PersistedUi {
                 active_worktree: Some(ActiveWorktreeId {
-                    repo: "grove".to_string(),
-                    branch: "gone-branch".to_string(),
+                    path: PathBuf::from("/Users/sebas/dev/grove-gone-worktree"),
                 }),
                 expanded: HashMap::new(),
             },
         };
         app.apply_persisted(persisted);
         assert_eq!(app.ui.active_worktree, None);
+    }
+
+    #[test]
+    fn active_worktree_survives_branch_switch_inside_worktree() {
+        // Whole point of path-keyed identity: if the user runs `git switch`
+        // inside a worktree's terminal, the active selection stays put.
+        let mut app = AppState::fixture();
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 0,
+            worktree: 1,
+        });
+        app.update(AppMessage::Activate);
+        assert!(app.active_worktree_id().is_some());
+
+        // Simulate the FS watcher re-listing after a branch switch by
+        // mutating the head label in place.
+        app.repos[0].worktrees[1].head =
+            crate::model::HeadRef::Branch("now-on-some-other-branch".to_string());
+
+        // Same path → same active worktree.
+        assert_eq!(app.active_worktree_id(), Some((0, 1)));
     }
 
     #[test]
@@ -2210,8 +2266,7 @@ mod tests {
             .collect();
 
         app.ui.active_worktree = Some(ActiveWorktreeId {
-            repo: "grove".into(),
-            branch: "feat/sidebar".into(),
+            path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
         });
         app.remove_repo(0).unwrap();
         assert_eq!(app.ui.active_worktree, None);
@@ -2275,8 +2330,7 @@ mod tests {
         app.main_views.insert((r, 1), MainView::Diff);
         app.main_views.insert((r, 2), MainView::Terminal);
         app.ui.active_worktree = Some(ActiveWorktreeId {
-            repo: "grove".to_string(),
-            branch: "feat/sidebar".to_string(),
+            path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
         });
 
         // Simulate a re-list that swaps indices 1 and 2 (e.g. a new worktree
@@ -2295,12 +2349,11 @@ mod tests {
         assert_eq!(app.main_views.get(&(r, 2)), Some(&MainView::Diff));
         // fix/deps (was 2) is now at 1.
         assert_eq!(app.main_views.get(&(r, 1)), Some(&MainView::Terminal));
-        // active_worktree is identity-based (repo+branch) so it stays unchanged.
+        // active_worktree is path-keyed so it stays unchanged through reorders.
         assert_eq!(
             app.ui.active_worktree,
             Some(ActiveWorktreeId {
-                repo: "grove".to_string(),
-                branch: "feat/sidebar".to_string(),
+                path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
             })
         );
     }
@@ -2312,8 +2365,7 @@ mod tests {
         app.main_views.insert((0, 0), MainView::Diff);
         app.main_views.insert((1, 0), MainView::Diff);
         app.ui.active_worktree = Some(ActiveWorktreeId {
-            repo: "dotfiles".to_string(),
-            branch: "main".to_string(),
+            path: PathBuf::from("/Users/sebas/dotfiles"),
         });
 
         // Remap repo 0 only; repo 1 entries must be untouched.
@@ -2324,8 +2376,7 @@ mod tests {
         assert_eq!(
             app.ui.active_worktree,
             Some(ActiveWorktreeId {
-                repo: "dotfiles".to_string(),
-                branch: "main".to_string(),
+                path: PathBuf::from("/Users/sebas/dotfiles"),
             })
         );
     }
@@ -2608,7 +2659,7 @@ mod tests {
         let feat_idx = app.repos[0]
             .worktrees
             .iter()
-            .position(|w| w.branch == "feat/x")
+            .position(|w| w.branch_name() == Some("feat/x"))
             .unwrap();
         app.ui.cursor = Some(SidebarCursor::Worktree {
             repo: 0,
@@ -2648,7 +2699,7 @@ mod tests {
         // Worktree gone.
         let wts = &app.repos[0].worktrees;
         assert!(
-            wts.iter().all(|w| w.branch != branch),
+            wts.iter().all(|w| w.branch_name() != Some(branch.as_str())),
             "worktree should have been removed: {wts:?}"
         );
         // Branch still exists on disk.
@@ -2702,6 +2753,46 @@ mod tests {
         assert!(branches
             .iter()
             .all(|b| b.name != branch || b.remote.is_some()));
+    }
+
+    #[test]
+    fn reconcile_worktrees_picks_up_branch_switch_in_terminal() {
+        // Simulates the FS-watcher firing after a user runs `git switch` in
+        // a terminal. The worktree's path is unchanged but its head moves to
+        // a new branch — `reconcile_worktrees` should update the label and
+        // keep the active selection (which is path-keyed) intact.
+        let (mut app, _) = setup_repo_with_feature_worktree(true);
+        let feat_idx = app.repos[0]
+            .worktrees
+            .iter()
+            .position(|w| w.branch_name() == Some("feat/x"))
+            .unwrap();
+        let wt_path = app.repos[0].worktrees[feat_idx].path.clone();
+
+        // Mark this worktree as active so we can verify it survives.
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 0,
+            worktree: feat_idx,
+        });
+        app.update(AppMessage::Activate);
+        assert_eq!(
+            app.ui.active_worktree.as_ref().map(|a| a.path.clone()),
+            Some(wt_path.clone()),
+        );
+
+        // Switch the branch *inside* the worktree.
+        run_git(&wt_path, &["checkout", "-b", "feat/renamed"]);
+
+        // The reconcile path mirrors what RepoDirty does on a real FS event.
+        app.reconcile_worktrees(0);
+
+        // Path-based identity → still active.
+        assert_eq!(app.active_worktree_id(), Some((0, feat_idx)));
+        // Label tracked the switch.
+        assert_eq!(
+            app.repos[0].worktrees[feat_idx].branch_name(),
+            Some("feat/renamed"),
+        );
     }
 
     /// A new branch created off local `main` is identical to `main` and
