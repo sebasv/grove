@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{AddRepoModal, NewWorktreeModal, NewWorktreeMode};
+use crate::app::{AddRepoModal, NewWorktreeModal};
 use crate::theme::Theme;
 use crate::ui::{centered_rect, text_input};
 
@@ -100,16 +100,10 @@ pub fn render_new_worktree(
     repo_name: &str,
     theme: &Theme,
 ) {
-    match modal.mode {
-        NewWorktreeMode::PickBranch => render_pick_branch(frame, area, modal, repo_name),
-        NewWorktreeMode::NewBranch => render_new_branch(frame, area, modal, repo_name, theme),
-    }
-}
-
-fn render_pick_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, repo_name: &str) {
-    let visible = 8usize;
-    let height = (visible + 6) as u16;
-    let modal_area = centered_rect(66, height, area);
+    let visible = 10usize;
+    // input (1) + blank (1) + list (visible) + blank (1) + error (1) + blank (1) + hint (1) + padding
+    let height = (visible + 9) as u16;
+    let modal_area = centered_rect(70, height, area);
     frame.render_widget(Clear, modal_area);
 
     let title = format!(" New worktree in {repo_name} ");
@@ -119,7 +113,10 @@ fn render_pick_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, r
 
     let rows = Layout::vertical([
         Constraint::Length(1),              // blank
-        Constraint::Length(visible as u16), // branch list
+        Constraint::Length(1),              // "Filter / new branch:"
+        Constraint::Length(1),              // input
+        Constraint::Length(1),              // separator
+        Constraint::Length(visible as u16), // list
         Constraint::Length(1),              // blank
         Constraint::Length(1),              // error
         Constraint::Length(1),              // blank
@@ -127,87 +124,7 @@ fn render_pick_branch(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, r
     ])
     .split(inner);
 
-    if modal.branches.is_empty() {
-        frame.render_widget(Paragraph::new("  No existing branches found."), rows[1]);
-    } else {
-        let scroll_offset = modal
-            .branch_cursor
-            .saturating_sub(visible - 1)
-            .min(modal.branches.len().saturating_sub(visible));
-
-        let items: Vec<ListItem> = modal
-            .branches
-            .iter()
-            .enumerate()
-            .skip(scroll_offset)
-            .take(visible)
-            .map(|(i, entry)| {
-                let selected = i == modal.branch_cursor;
-                let marker = if selected { "▶ " } else { "  " };
-                let name_style = if selected {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                let tag = if entry.is_remote_only() {
-                    Span::styled(" [remote]", Style::default().fg(Color::DarkGray))
-                } else {
-                    Span::raw("")
-                };
-                ListItem::new(Line::from(vec![
-                    Span::raw(marker),
-                    Span::styled(entry.display(), name_style),
-                    tag,
-                ]))
-            })
-            .collect();
-        frame.render_widget(List::new(items), rows[1]);
-    }
-
-    if let Some(err) = &modal.error {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                format!("  ! {err}"),
-                Style::default().fg(Color::Red),
-            )),
-            rows[3],
-        );
-    }
-
-    let hint = if modal.branches.is_empty() {
-        "  Tab: type new branch name  ·  Esc cancel"
-    } else {
-        "  j/k navigate  ·  Enter create  ·  Tab: new branch  ·  Esc cancel"
-    };
-    frame.render_widget(Paragraph::new(hint), rows[5]);
-}
-
-fn render_new_branch(
-    frame: &mut Frame,
-    area: Rect,
-    modal: &NewWorktreeModal,
-    repo_name: &str,
-    theme: &Theme,
-) {
-    let modal_area = centered_rect(62, 11, area);
-    frame.render_widget(Clear, modal_area);
-    let title = format!(" New worktree in {repo_name} ");
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let inner = block.inner(modal_area);
-    frame.render_widget(block, modal_area);
-
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
-
-    frame.render_widget(Paragraph::new("  Branch name:"), rows[1]);
+    frame.render_widget(Paragraph::new("  Filter / new branch name:"), rows[1]);
 
     let input_area = Rect {
         x: rows[2].x + 2,
@@ -216,17 +133,86 @@ fn render_new_branch(
     };
     text_input::render(frame, input_area, &modal.input, theme.input_bg_focused);
 
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(Color::DarkGray),
+        )),
+        rows[3],
+    );
+
+    render_row_list(frame, rows[4], modal, theme);
+
     if let Some(err) = &modal.error {
-        let line = Line::styled(format!("  ! {err}"), Style::default().fg(Color::Red));
-        frame.render_widget(Paragraph::new(line), rows[4]);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!("  ! {err}"),
+                Style::default().fg(Color::Red),
+            )),
+            rows[6],
+        );
     }
 
-    let hint = if !modal.branches.is_empty() {
-        "  Enter create  ·  Tab pick existing  ·  Esc cancel"
-    } else {
-        "  Enter to create  ·  Esc to cancel"
-    };
-    frame.render_widget(Paragraph::new(hint), rows[6]);
+    frame.render_widget(
+        Paragraph::new("  ↑/↓ navigate  ·  Enter confirm  ·  Esc cancel"),
+        rows[8],
+    );
+}
+
+fn render_row_list(frame: &mut Frame, area: Rect, modal: &NewWorktreeModal, theme: &Theme) {
+    // Build the combined list: row 0 = "Create new <input>", rows 1..
+    // = filter_matches[i].  Uses `ListState` + `highlight_style` so the
+    // cursor row is the only row ratatui styles differently — every
+    // other item renders with an identical, plain style, avoiding the
+    // terminal-dependent bleed we saw when individual items mixed
+    // explicit and default foregrounds.
+    let dim = Style::default().fg(theme.dim);
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(modal.total_rows());
+
+    // Row 0: create new.
+    {
+        let input = modal.input.value();
+        let shown = if input.is_empty() {
+            "(type a name)".to_string()
+        } else {
+            input.to_string()
+        };
+        let placeholder_style = if input.is_empty() {
+            dim
+        } else {
+            Style::default()
+        };
+        items.push(ListItem::new(Line::from(vec![
+            Span::raw("Create new branch "),
+            Span::styled(shown, placeholder_style),
+        ])));
+    }
+
+    // Rows 1..: filtered existing branches.
+    for &branch_idx in &modal.filter_matches {
+        let entry = &modal.branches[branch_idx];
+        let mut spans = vec![Span::raw(entry.display())];
+        if entry.is_remote_only() {
+            spans.push(Span::styled(" [remote]", dim));
+        }
+        items.push(ListItem::new(Line::from(spans)));
+    }
+
+    // `highlight_symbol` reserves a prefix column per row; non-selected
+    // rows get blank padding, so the text lines up with the ▶ marker
+    // without us having to hand-indent every item.  Using `REVERSED`
+    // for highlight (fg/bg swap) rather than a foreground colour means
+    // the cursor row is a self-contained toggled attribute, so
+    // terminals that don't cleanly reset colour SGR between rows
+    // (macOS Terminal with some profiles) can't leak the cursor
+    // row's tint into adjacent rows.
+    let mut state = ListState::default();
+    state.select(Some(modal.cursor));
+    let list = List::new(items)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("▶ ");
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ use crossterm::{
         KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
+    style::{Attribute, SetAttribute},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use portable_pty::PtySize;
@@ -931,32 +932,26 @@ fn add_repo_keys(key: KeyEvent) -> AppMessage {
     }
 }
 
-fn new_worktree_keys(key: KeyEvent, modal: &NewWorktreeModal) -> AppMessage {
-    use crate::app::NewWorktreeMode;
-    match modal.mode {
-        NewWorktreeMode::PickBranch => match key.code {
-            KeyCode::Char('j') | KeyCode::Down => AppMessage::BranchCursorDown,
-            KeyCode::Char('k') | KeyCode::Up => AppMessage::BranchCursorUp,
-            KeyCode::Enter => AppMessage::SubmitModal,
-            KeyCode::Tab => AppMessage::SwitchWorktreeMode,
-            KeyCode::Esc => AppMessage::CloseModal,
-            _ => AppMessage::NoOp,
-        },
-        NewWorktreeMode::NewBranch => match key.code {
-            KeyCode::Esc => AppMessage::CloseModal,
-            KeyCode::Enter => AppMessage::SubmitModal,
-            KeyCode::Tab if !modal.branches.is_empty() => AppMessage::SwitchWorktreeMode,
-            KeyCode::Backspace => AppMessage::InputBackspace,
-            KeyCode::Delete => AppMessage::InputDelete,
-            KeyCode::Left => AppMessage::InputCursorLeft,
-            KeyCode::Right => AppMessage::InputCursorRight,
-            KeyCode::Home => AppMessage::InputHome,
-            KeyCode::End => AppMessage::InputEnd,
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                AppMessage::InputChar(c)
-            }
-            _ => AppMessage::NoOp,
-        },
+fn new_worktree_keys(key: KeyEvent, _modal: &NewWorktreeModal) -> AppMessage {
+    // Unified modal: input + filter list.  Arrow / j / k move the cursor
+    // through the list (row 0 = create-new, rows 1.. = filtered
+    // branches).  Typing edits the input and — via
+    // `with_add_repo_input` → `recompute_filter` — updates the list.
+    match key.code {
+        KeyCode::Esc => AppMessage::CloseModal,
+        KeyCode::Enter => AppMessage::SubmitModal,
+        KeyCode::Down => AppMessage::BranchCursorDown,
+        KeyCode::Up => AppMessage::BranchCursorUp,
+        KeyCode::Backspace => AppMessage::InputBackspace,
+        KeyCode::Delete => AppMessage::InputDelete,
+        KeyCode::Left => AppMessage::InputCursorLeft,
+        KeyCode::Right => AppMessage::InputCursorRight,
+        KeyCode::Home => AppMessage::InputHome,
+        KeyCode::End => AppMessage::InputEnd,
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            AppMessage::InputChar(c)
+        }
+        _ => AppMessage::NoOp,
     }
 }
 
@@ -993,6 +988,14 @@ fn init_terminal() -> Result<Tui> {
     execute!(
         io::stdout(),
         EnterAlternateScreen,
+        // Force every SGR attribute back to default before ratatui starts
+        // diff-rendering.  ratatui assumes the terminal begins each draw
+        // with cleared attributes; if the calling shell (e.g. powerlevel10k
+        // on macOS Terminal) left DIM or BOLD active, cells written in the
+        // first frame inherit that state and stay stuck — only cells the
+        // cursor later moves over get re-emitted with a fresh state, so
+        // visited rows look brighter than untouched ones.
+        SetAttribute(Attribute::Reset),
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
