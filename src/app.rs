@@ -2642,4 +2642,55 @@ mod tests {
             .iter()
             .all(|b| b.name != branch || b.remote.is_some()));
     }
+
+    /// A new branch created off local `main` is identical to `main` and
+    /// must be reported as merged — even when `origin/main` is behind
+    /// (e.g. local has unpushed commits).  Otherwise the user gets the
+    /// "unmerged" warning the moment they create+delete a fresh worktree.
+    #[test]
+    fn fresh_branch_off_local_main_is_merged_when_origin_is_behind() {
+        let tmp = temp_dir();
+        let bare = tmp.join("remote.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["init", "--bare", "--quiet", "--initial-branch=main"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let repo = tmp.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+        run_git(
+            &repo,
+            &["remote", "add", "origin", &bare.display().to_string()],
+        );
+        run_git(&repo, &["push", "--quiet", "-u", "origin", "main"]);
+        // Land an extra commit on local main so it's ahead of origin/main.
+        std::fs::write(repo.join("ahead.txt"), "ahead").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "ahead",
+                "--quiet",
+            ],
+        );
+        // Cut a fresh branch off local main's current tip.
+        run_git(&repo, &["branch", "fresh"]);
+
+        assert!(
+            crate::git::is_branch_merged(&repo, "fresh", "main"),
+            "branch at the same tip as local main should be reported merged \
+             even when origin/main is behind"
+        );
+    }
 }
