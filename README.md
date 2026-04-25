@@ -2,7 +2,12 @@
 
 A terminal UI for cultivating git repositories, worktrees, and the work inside them.
 
-Grove keeps all your active branches in one view — navigate between worktrees in the sidebar, run commands in embedded terminals, and review diffs without ever leaving the TUI.
+If you juggle several feature branches at once and find `git worktree add` painful to drive by hand, grove keeps all of them in one place: navigate between worktrees in the sidebar, run commands in embedded terminals, and review diffs without ever leaving the TUI.
+
+![grove screenshot](assets/screenshot.png)
+
+<details>
+<summary>ASCII preview (when the screenshot can't render)</summary>
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -22,6 +27,8 @@ Grove keeps all your active branches in one view — navigate between worktrees 
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+</details>
+
 ## Features
 
 - Sidebar with live git status badges per worktree (staged / modified / ahead / behind / conflicts; see [Status badges](#status-badges))
@@ -34,18 +41,19 @@ Grove keeps all your active branches in one view — navigate between worktrees 
 - Unified, filter-as-you-type modal for creating worktrees off any local or remote branch
 - Auto-detected base branch (`origin/HEAD`) per repo, with a configurable fallback
 - Mouse support — click to focus, scroll wheel in terminals and diffs
-- Persistent UI state including theme — reopens exactly where you left off
-- Three built-in themes (`default`, `tokyonight`, `gruvbox`) — cycle with `F2`
-- Zero dependencies — single binary, no tmux required
+- Persisted UI state — reopens exactly where you left off
+- Single binary — no tmux, no system services, just `git` on your `PATH`
 
 ## Install
+
+Homebrew (macOS and Linux):
 
 ```sh
 brew tap sebasv/grove
 brew install grove
 ```
 
-Or download a binary directly from the [releases page](https://github.com/sebasv/grove/releases).
+Or download a prebuilt binary for your platform from the [releases page](https://github.com/sebasv/grove/releases).
 
 ## Quickstart
 
@@ -84,6 +92,14 @@ That's it. Worktrees inside each repo are discovered automatically, and your cho
 
 See `?` inside grove for the full reference.
 
+### GitHub integration
+
+PR and CI status badges only appear when grove can authenticate to GitHub. It looks for credentials in this order:
+
+1. `GITHUB_TOKEN` or `GH_TOKEN` environment variable.
+2. `gh auth token` — works after `gh auth login` (including the SSH-key flow).
+
+Without either, grove still runs; the PR and CI badges just stay blank.
 ### Status badges
 
 Each worktree row carries up to two clusters of badges: git working-tree state (left) and GitHub PR + CI state (right).
@@ -152,7 +168,7 @@ base_branch = "master"            # optional per-repo override
 
 ## Feedback and contributions
 
-Grove is in active development. If something doesn't work, feels off, or you have an idea — please [open an issue](https://github.com/sebasv/grove/issues). Pull requests are welcome too; check the issues list for anything tagged `good first issue` or just reach out before starting something large.
+Grove is stable and evolving. If something doesn't work, feels off, or you have an idea — please [open an issue](https://github.com/sebasv/grove/issues). Pull requests are welcome too; check the issues list for anything tagged `good first issue` or just reach out before starting something large. [`design/DESIGN.md`](design/DESIGN.md) is the place to start if you want context on how grove is put together before opening a PR.
 
 ## License
 
