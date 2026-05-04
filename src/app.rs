@@ -215,7 +215,6 @@ pub enum AgentState {
 pub struct UiState {
     pub expanded: HashMap<String, bool>,
     pub cursor: Option<SidebarCursor>,
-    pub active_worktree: Option<ActiveWorktreeId>,
     pub modal: Option<Modal>,
     pub focus: FocusZone,
     pub help_scroll: u16,
@@ -812,13 +811,11 @@ impl AppState {
     }
 
     pub fn active_worktree_id(&self) -> Option<WorktreeId> {
-        let id = self.ui.active_worktree.as_ref()?;
-        self.repos.iter().enumerate().find_map(|(i, repo)| {
-            repo.worktrees
-                .iter()
-                .position(|wt| wt.path == id.path)
-                .map(|j| (i, j))
-        })
+        let SidebarCursor::Worktree { repo, worktree } = self.ui.cursor? else {
+            return None;
+        };
+        let _ = self.repos.get(repo)?.worktrees.get(worktree)?;
+        Some((repo, worktree))
     }
 
     fn cycle_focus(&mut self) {
@@ -1118,7 +1115,7 @@ impl AppState {
 
         // Cursor == 0 → "Create new branch <input>".  Any other cursor
         // position selects an existing branch.
-        match m.selected_branch() {
+        let new_path: PathBuf = match m.selected_branch() {
             None => {
                 let branch = m.input.value().trim();
                 if branch.is_empty() {
@@ -1130,6 +1127,7 @@ impl AppState {
                         .with_context(|| format!("creating {}", parent.display()))?;
                 }
                 git::create_worktree(&repo_root, branch, &path, &base_branch)?;
+                path
             }
             Some(entry) => {
                 let path =
@@ -1155,8 +1153,9 @@ impl AppState {
                 } else {
                     git::create_worktree_from_existing(&repo_root, &entry.name, &path)?;
                 }
+                path
             }
-        }
+        };
 
         let new_list = git::list_worktrees(&self.repos[repo_idx].root_path)?;
         // Remap state keyed by worktree index before replacing the list.
@@ -1164,18 +1163,28 @@ impl AppState {
         // on APFS/macOS), so adding a new worktree can shift existing indices.
         self.remap_worktree_state(repo_idx, &new_list);
         self.repos[repo_idx].worktrees = new_list;
-        let last = self.repos[repo_idx].worktrees.len().saturating_sub(1);
-        self.ui.cursor = Some(SidebarCursor::Worktree {
-            repo: repo_idx,
-            worktree: last,
-        });
+        // Land the cursor on the *just-created* worktree by path: list order
+        // is alphabetical, so it isn't necessarily at the tail.  Falls back
+        // to the parent repo when the lookup somehow fails (shouldn't, but
+        // a stale cursor index would point at the wrong worktree).
+        let new_idx = self.repos[repo_idx]
+            .worktrees
+            .iter()
+            .position(|wt| wt.path == new_path);
+        self.ui.cursor = match new_idx {
+            Some(idx) => Some(SidebarCursor::Worktree {
+                repo: repo_idx,
+                worktree: idx,
+            }),
+            None => Some(SidebarCursor::Repo(repo_idx)),
+        };
         Ok(())
     }
 
-    /// Remap `terminals`, `diffs`, `main_views`, and `active_worktree` so they
-    /// continue to track the same worktrees after a re-list may have reordered
-    /// them.  Matching is done by filesystem path, which is stable across
-    /// re-lists.
+    /// Remap `terminals`, `diffs`, `main_views`, and the sidebar cursor so
+    /// they continue to track the same worktrees after a re-list may have
+    /// reordered them.  Matching is done by filesystem path, which is stable
+    /// across re-lists.
     fn remap_worktree_state(&mut self, repo_idx: usize, new_list: &[crate::model::Worktree]) {
         let r = repo_idx;
         let path_to_new: HashMap<std::path::PathBuf, usize> = new_list
@@ -1229,9 +1238,34 @@ impl AppState {
             .collect();
         self.main_views = new_views;
 
-        // ActiveWorktreeId is path-keyed, so no remap is needed for it — the
-        // path it points at either still exists (active stays valid) or
-        // doesn't (the next call to `active_worktree_id` returns `None`).
+        // The cursor IS the active selection now that the main pane derives
+        // from it.  Translate by path: if the worktree the cursor pointed at
+        // survived the re-list, follow it to its new index; if it was
+        // removed, fall back to a nearby survivor (or the parent repo when
+        // the list is empty) so the main pane never displays content for a
+        // worktree the user can no longer see in the sidebar.
+        if let Some(SidebarCursor::Worktree {
+            repo: cr,
+            worktree: cw,
+        }) = self.ui.cursor
+        {
+            if cr == r {
+                if let Some(&nw) = old_to_new.get(&cw) {
+                    self.ui.cursor = Some(SidebarCursor::Worktree {
+                        repo: cr,
+                        worktree: nw,
+                    });
+                } else if new_list.is_empty() {
+                    self.ui.cursor = Some(SidebarCursor::Repo(cr));
+                } else {
+                    let nw = cw.min(new_list.len() - 1);
+                    self.ui.cursor = Some(SidebarCursor::Worktree {
+                        repo: cr,
+                        worktree: nw,
+                    });
+                }
+            }
+        }
     }
 
     /// Re-list a repo's worktrees from disk and reconcile in-memory state.
@@ -1329,19 +1363,9 @@ impl AppState {
             .collect();
         self.main_views = views;
 
-        // If the removed worktree was active, clear it. ActiveWorktreeId is
-        // path-keyed so a re-list that shuffles indices doesn't affect it.
-        if let Some(ref id) = self.ui.active_worktree.clone() {
-            let still_present = self
-                .repos
-                .iter()
-                .any(|repo| repo.worktrees.iter().any(|wt| wt.path == id.path));
-            if !still_present {
-                self.ui.active_worktree = None;
-            }
-        }
-
-        // Move cursor sensibly.
+        // Move cursor sensibly — this is also what drives the main pane
+        // now, so landing on a survivor (or the parent repo when empty)
+        // automatically refreshes what's shown.
         if self.repos[r].worktrees.is_empty() {
             self.ui.cursor = Some(SidebarCursor::Repo(r));
         } else {
@@ -1421,11 +1445,6 @@ impl AppState {
         new_config.save(&self.config_path)?;
         self.config = new_config;
 
-        let removed_paths: std::collections::HashSet<PathBuf> = self.repos[idx]
-            .worktrees
-            .iter()
-            .map(|wt| wt.path.clone())
-            .collect();
         let path_key = self.repos[idx].root_path.to_string_lossy().into_owned();
         self.repos.remove(idx);
         // Shift the activity scheduler's last-fetched timeline so subsequent
@@ -1437,11 +1456,6 @@ impl AppState {
         self.activity.resize_repos(self.repos.len());
         self.has_github_repo = any_github_remote(&self.repos);
         self.ui.expanded.remove(&path_key);
-        self.ui.active_worktree = self
-            .ui
-            .active_worktree
-            .take()
-            .filter(|id| !removed_paths.contains(&id.path));
 
         // Drop terminals for the removed repo and shift indices for later repos.
         let surviving: HashMap<WorktreeId, WorktreeTerminals> = self
@@ -1512,9 +1526,10 @@ impl AppState {
     pub fn apply_persisted(&mut self, persisted: PersistedState) {
         self.ui.expanded = persisted.ui.expanded;
         if let Some(active) = persisted.ui.active_worktree {
-            // Re-resolve the worktree's current indices for cursor placement.
-            // Identity is the path; indices may differ from the previous
-            // session if worktrees were added, removed, or reordered.
+            // Translate the persisted path back to today's (repo, worktree)
+            // indices. Identity is the path because worktrees may have been
+            // added, removed, or reordered between sessions; if the path is
+            // gone, leave the cursor at its default.
             let found = self.repos.iter().enumerate().find_map(|(i, repo)| {
                 repo.worktrees
                     .iter()
@@ -1522,7 +1537,6 @@ impl AppState {
                     .map(|j| (i, j))
             });
             if let Some((r, w)) = found {
-                self.ui.active_worktree = Some(active);
                 self.ui.cursor = Some(SidebarCursor::Worktree {
                     repo: r,
                     worktree: w,
@@ -1532,10 +1546,23 @@ impl AppState {
     }
 
     pub fn to_persisted(&self) -> PersistedState {
+        // Persist the cursor's worktree path (when it's on one) so the next
+        // session can restore the same selection even if indices have
+        // shifted.  Path is the only identity stable across re-lists.
+        let active_worktree = match self.ui.cursor {
+            Some(SidebarCursor::Worktree { repo, worktree }) => self
+                .repos
+                .get(repo)
+                .and_then(|r| r.worktrees.get(worktree))
+                .map(|wt| ActiveWorktreeId {
+                    path: wt.path.clone(),
+                }),
+            _ => None,
+        };
         PersistedState {
             schema_version: crate::state::current_schema_version(),
             ui: PersistedUi {
-                active_worktree: self.ui.active_worktree.clone(),
+                active_worktree,
                 expanded: self.ui.expanded.clone(),
             },
         }
@@ -1566,7 +1593,6 @@ impl AppState {
             Some(c) => c,
             None => {
                 self.ui.cursor = Some(visible[0]);
-                self.sync_active_to_cursor();
                 return;
             }
         };
@@ -1576,7 +1602,6 @@ impl AppState {
             Direction::Down => (pos + 1).min(visible.len() - 1),
         };
         self.ui.cursor = Some(visible[new_pos]);
-        self.sync_active_to_cursor();
     }
 
     fn expand_or_descend(&mut self) {
@@ -1590,7 +1615,6 @@ impl AppState {
                     repo: idx,
                     worktree: 0,
                 });
-                self.sync_active_to_cursor();
             }
         } else {
             self.ui
@@ -1624,13 +1648,9 @@ impl AppState {
         };
         match cursor {
             SidebarCursor::Worktree { repo, worktree } => {
-                self.ui.active_worktree = self.repos.get(repo).and_then(|r| {
-                    r.worktrees.get(worktree).map(|wt| ActiveWorktreeId {
-                        path: wt.path.clone(),
-                    })
-                });
                 // Acknowledge any pending bells in this worktree's
-                // terminals — the user is now looking at them.
+                // terminals — pressing Enter is the explicit "I'm looking
+                // at this now" gesture, distinct from arrowing past it.
                 if let Some(ts) = self.terminals.get(&(repo, worktree)) {
                     ts.clear_bells();
                 }
@@ -1642,16 +1662,6 @@ impl AppState {
                     .expanded
                     .insert(path.to_string_lossy().into_owned(), !expanded);
             }
-        }
-    }
-
-    fn sync_active_to_cursor(&mut self) {
-        if let Some(SidebarCursor::Worktree { repo, worktree }) = self.ui.cursor {
-            self.ui.active_worktree = self.repos.get(repo).and_then(|r| {
-                r.worktrees.get(worktree).map(|wt| ActiveWorktreeId {
-                    path: wt.path.clone(),
-                })
-            });
         }
     }
 
@@ -1958,12 +1968,7 @@ mod tests {
                 worktree: 0
             })
         );
-        assert_eq!(
-            app.ui.active_worktree,
-            Some(ActiveWorktreeId {
-                path: PathBuf::from("/Users/sebas/dev/grove"),
-            })
-        );
+        assert_eq!(app.active_worktree_id(), Some((0, 0)));
         app.update(AppMessage::MoveCursor(Direction::Down));
         assert_eq!(
             app.ui.cursor,
@@ -1972,20 +1977,16 @@ mod tests {
                 worktree: 1
             })
         );
-        assert_eq!(
-            app.ui.active_worktree,
-            Some(ActiveWorktreeId {
-                path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
-            })
-        );
+        assert_eq!(app.active_worktree_id(), Some((0, 1)));
     }
 
     #[test]
     fn moving_cursor_to_worktree_activates_it() {
         let mut app = AppState::fixture();
-        assert_eq!(app.ui.active_worktree, None);
+        // Cursor starts on a Repo node — no worktree shown in main pane.
+        assert_eq!(app.active_worktree_id(), None);
         app.update(AppMessage::MoveCursor(Direction::Down));
-        assert!(app.ui.active_worktree.is_some());
+        assert!(app.active_worktree_id().is_some());
     }
 
     #[test]
@@ -2040,19 +2041,14 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_worktree_sets_active() {
+    fn cursor_on_worktree_is_the_active_worktree() {
         let mut app = AppState::fixture();
         app.ui.cursor = Some(SidebarCursor::Worktree {
             repo: 0,
             worktree: 2,
         });
-        app.update(AppMessage::Activate);
-        assert_eq!(
-            app.ui.active_worktree,
-            Some(ActiveWorktreeId {
-                path: PathBuf::from("/Users/sebas/dev/grove-fix-deps"),
-            })
-        );
+        // Active worktree is derived from the cursor — no extra step.
+        assert_eq!(app.active_worktree_id(), Some((0, 2)));
     }
 
     #[test]
@@ -2074,7 +2070,6 @@ mod tests {
             repo: 0,
             worktree: 2,
         });
-        app.update(AppMessage::Activate);
 
         let persisted = app.to_persisted();
 
@@ -2082,18 +2077,13 @@ mod tests {
         restored.apply_persisted(persisted);
         assert!(!restored.ui.is_expanded(Path::new("/Users/sebas/dotfiles")));
         assert_eq!(
-            restored.ui.active_worktree,
-            Some(ActiveWorktreeId {
-                path: PathBuf::from("/Users/sebas/dev/grove-fix-deps"),
-            })
-        );
-        assert_eq!(
             restored.ui.cursor,
             Some(SidebarCursor::Worktree {
                 repo: 0,
                 worktree: 2
             })
         );
+        assert_eq!(restored.active_worktree_id(), Some((0, 2)));
     }
 
     #[test]
@@ -2109,19 +2099,20 @@ mod tests {
             },
         };
         app.apply_persisted(persisted);
-        assert_eq!(app.ui.active_worktree, None);
+        // Cursor stays at its default (Repo(0)) — restoring a missing path
+        // shouldn't surface a stale selection in the main pane.
+        assert_eq!(app.active_worktree_id(), None);
     }
 
     #[test]
     fn active_worktree_survives_branch_switch_inside_worktree() {
-        // Whole point of path-keyed identity: if the user runs `git switch`
-        // inside a worktree's terminal, the active selection stays put.
+        // Branch switches inside a worktree don't move it in the sidebar,
+        // so the cursor (and therefore the main pane) stays put.
         let mut app = AppState::fixture();
         app.ui.cursor = Some(SidebarCursor::Worktree {
             repo: 0,
             worktree: 1,
         });
-        app.update(AppMessage::Activate);
         assert!(app.active_worktree_id().is_some());
 
         // Simulate the FS watcher re-listing after a branch switch by
@@ -2129,7 +2120,7 @@ mod tests {
         app.repos[0].worktrees[1].head =
             crate::model::HeadRef::Branch("now-on-some-other-branch".to_string());
 
-        // Same path → same active worktree.
+        // Same cursor → same active worktree.
         assert_eq!(app.active_worktree_id(), Some((0, 1)));
     }
 
@@ -2344,11 +2335,16 @@ mod tests {
             })
             .collect();
 
-        app.ui.active_worktree = Some(ActiveWorktreeId {
-            path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 0,
+            worktree: 1,
         });
+        assert!(app.active_worktree_id().is_some());
         app.remove_repo(0).unwrap();
-        assert_eq!(app.ui.active_worktree, None);
+        // Removing the repo whose worktree was active must drop the active
+        // worktree — cursor lands on the surviving repo's row, so the main
+        // pane shows no worktree content.
+        assert_eq!(app.active_worktree_id(), None);
     }
 
     fn temp_dir() -> PathBuf {
@@ -2408,8 +2404,11 @@ mod tests {
         app.main_views.insert((r, 0), MainView::Terminal);
         app.main_views.insert((r, 1), MainView::Diff);
         app.main_views.insert((r, 2), MainView::Terminal);
-        app.ui.active_worktree = Some(ActiveWorktreeId {
-            path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
+        // Cursor on feat/sidebar (index 1).  After the swap below it should
+        // follow the path to its new index 2, keeping the main pane in sync.
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: r,
+            worktree: 1,
         });
 
         // Simulate a re-list that swaps indices 1 and 2 (e.g. a new worktree
@@ -2428,11 +2427,12 @@ mod tests {
         assert_eq!(app.main_views.get(&(r, 2)), Some(&MainView::Diff));
         // fix/deps (was 2) is now at 1.
         assert_eq!(app.main_views.get(&(r, 1)), Some(&MainView::Terminal));
-        // active_worktree is path-keyed so it stays unchanged through reorders.
+        // Cursor followed feat/sidebar's path to its new index.
         assert_eq!(
-            app.ui.active_worktree,
-            Some(ActiveWorktreeId {
-                path: PathBuf::from("/Users/sebas/dev/grove-feat-sidebar"),
+            app.ui.cursor,
+            Some(SidebarCursor::Worktree {
+                repo: r,
+                worktree: 2
             })
         );
     }
@@ -2443,8 +2443,10 @@ mod tests {
 
         app.main_views.insert((0, 0), MainView::Diff);
         app.main_views.insert((1, 0), MainView::Diff);
-        app.ui.active_worktree = Some(ActiveWorktreeId {
-            path: PathBuf::from("/Users/sebas/dotfiles"),
+        // Cursor on a repo-1 worktree must not move when repo-0 is remapped.
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 1,
+            worktree: 0,
         });
 
         // Remap repo 0 only; repo 1 entries must be untouched.
@@ -2453,9 +2455,49 @@ mod tests {
 
         assert_eq!(app.main_views.get(&(1, 0)), Some(&MainView::Diff));
         assert_eq!(
-            app.ui.active_worktree,
-            Some(ActiveWorktreeId {
-                path: PathBuf::from("/Users/sebas/dotfiles"),
+            app.ui.cursor,
+            Some(SidebarCursor::Worktree {
+                repo: 1,
+                worktree: 0
+            })
+        );
+    }
+
+    #[test]
+    fn remap_worktree_state_drops_cursor_to_repo_when_list_empty() {
+        // The repo loses all its worktrees externally.  Cursor must move
+        // up to the parent repo so the main pane shows no worktree
+        // content for one that no longer exists.
+        let mut app = AppState::fixture();
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 0,
+            worktree: 1,
+        });
+        app.remap_worktree_state(0, &[]);
+        assert_eq!(app.ui.cursor, Some(SidebarCursor::Repo(0)));
+        assert_eq!(app.active_worktree_id(), None);
+    }
+
+    #[test]
+    fn remap_worktree_state_falls_back_to_neighbor_when_cursor_path_gone() {
+        // Cursor was on feat/sidebar (idx 1).  Re-list drops feat/sidebar
+        // but keeps main and fix/deps.  Cursor must land on a survivor at
+        // a similar index — never on a stale (repo, idx) pair.
+        let mut app = AppState::fixture();
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 0,
+            worktree: 1,
+        });
+        let new_list = vec![
+            app.repos[0].worktrees[0].clone(), // main
+            app.repos[0].worktrees[2].clone(), // fix/deps
+        ];
+        app.remap_worktree_state(0, &new_list);
+        assert_eq!(
+            app.ui.cursor,
+            Some(SidebarCursor::Worktree {
+                repo: 0,
+                worktree: 1
             })
         );
     }
@@ -2837,9 +2879,9 @@ mod tests {
     #[test]
     fn reconcile_worktrees_picks_up_branch_switch_in_terminal() {
         // Simulates the FS-watcher firing after a user runs `git switch` in
-        // a terminal. The worktree's path is unchanged but its head moves to
-        // a new branch — `reconcile_worktrees` should update the label and
-        // keep the active selection (which is path-keyed) intact.
+        // a terminal. The worktree's path is unchanged but its head moves
+        // to a new branch — `reconcile_worktrees` should update the label
+        // and keep the cursor (which the main pane derives from) intact.
         let (mut app, _) = setup_repo_with_feature_worktree(true);
         let feat_idx = app.repos[0]
             .worktrees
@@ -2848,16 +2890,11 @@ mod tests {
             .unwrap();
         let wt_path = app.repos[0].worktrees[feat_idx].path.clone();
 
-        // Mark this worktree as active so we can verify it survives.
         app.ui.cursor = Some(SidebarCursor::Worktree {
             repo: 0,
             worktree: feat_idx,
         });
-        app.update(AppMessage::Activate);
-        assert_eq!(
-            app.ui.active_worktree.as_ref().map(|a| a.path.clone()),
-            Some(wt_path.clone()),
-        );
+        assert_eq!(app.active_worktree_id(), Some((0, feat_idx)));
 
         // Switch the branch *inside* the worktree.
         run_git(&wt_path, &["checkout", "-b", "feat/renamed"]);
@@ -2865,7 +2902,7 @@ mod tests {
         // The reconcile path mirrors what RepoDirty does on a real FS event.
         app.reconcile_worktrees(0);
 
-        // Path-based identity → still active.
+        // Cursor remap follows the path → still active at the same index.
         assert_eq!(app.active_worktree_id(), Some((0, feat_idx)));
         // Label tracked the switch.
         assert_eq!(
