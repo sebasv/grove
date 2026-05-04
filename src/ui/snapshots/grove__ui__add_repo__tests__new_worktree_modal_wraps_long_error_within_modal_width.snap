@@ -1,6 +1,5 @@
 ---
 source: src/ui/add_repo.rs
-assertion_line: 282
 expression: render_to_string(&app)
 ---
 "┌ New worktree in grove ─────────────────────────────────────────────┐"
@@ -19,7 +18,7 @@ expression: render_to_string(&app)
 "│                                                                    │"
 "│                                                                    │"
 "│  ! this is a deliberately very long error message that definitely  │"
-"│exceeds the modal width and must wrap                               │"
+"│    exceeds the modal width and must wrap                           │"
 "│                                                                    │"
 "│  ↑/↓ navigate  ·  Enter confirm  ·  Esc cancel                     │"
 "└────────────────────────────────────────────────────────────────────┘"

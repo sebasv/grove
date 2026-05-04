@@ -1,6 +1,5 @@
 ---
 source: src/ui/help.rs
-assertion_line: 100
 expression: terminal.backend()
 ---
 " PROJECTS                       ┌ grove ─────────────────────────────┐"

@@ -1,6 +1,5 @@
 ---
 source: src/ui/sidebar.rs
-assertion_line: 212
 expression: render_to_string(&app)
 ---
 " PROJECTS                       "
