@@ -1,0 +1,25 @@
+---
+source: src/ui/add_repo.rs
+assertion_line: 282
+expression: render_to_string(&app)
+---
+"┌ New worktree in grove ─────────────────────────────────────────────┐"
+"│                                                                    │"
+"│  Filter / new branch name:                                         │"
+"│                                                                    │"
+"│────────────────────────────────────────────────────────────────────│"
+"│▶ Create new branch (type a name)                                   │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│  ! this is a deliberately very long error message that definitely  │"
+"│exceeds the modal width and must wrap                               │"
+"│                                                                    │"
+"│  ↑/↓ navigate  ·  Enter confirm  ·  Esc cancel                     │"
+"└────────────────────────────────────────────────────────────────────┘"

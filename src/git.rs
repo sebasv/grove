@@ -278,6 +278,30 @@ pub fn is_git_repo(path: &Path) -> bool {
     Repository::open(path).is_ok()
 }
 
+/// Returns `true` when the repo has no commits yet — i.e. HEAD points at an
+/// unborn branch. `git worktree add` rejects unborn repos because there is
+/// no commit to base the new worktree on, so callers should surface a
+/// clear error instead of letting `git` fail with `fatal: invalid reference`.
+///
+/// Implemented by shelling out to `git rev-parse --verify HEAD`, which
+/// exits 0 with the SHA when HEAD resolves to a commit and non-zero
+/// otherwise. Goes through git rather than libgit2 because libgit2's
+/// `is_empty` / `head` behaviour on freshly-initialised repos differs
+/// between platforms (the equivalent libgit2 check returned `false` on
+/// Linux CI for repos that were genuinely unborn).
+pub fn is_unborn_head(repo_root: &Path) -> bool {
+    if !repo_root.join(".git").exists() {
+        return false;
+    }
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(false)
+}
+
 /// Resolve `origin/HEAD` to a branch name, e.g. `"main"` or `"master"`.
 /// Returns `None` when the remote has never been fetched, `origin/HEAD`
 /// was not set by the remote, or the repo has no `origin` at all.
@@ -707,6 +731,26 @@ mod tests {
     fn is_git_repo_rejects_non_repo() {
         let dir = temp_dir();
         assert!(!is_git_repo(&dir));
+    }
+
+    #[test]
+    fn is_unborn_head_true_for_freshly_initialised_repo() {
+        let dir = temp_dir();
+        run_git_test(&dir, &["init", "--quiet", "--initial-branch=main"]);
+        assert!(is_unborn_head(&dir));
+    }
+
+    #[test]
+    fn is_unborn_head_false_after_first_commit() {
+        let dir = temp_dir();
+        init_repo(&dir);
+        assert!(!is_unborn_head(&dir));
+    }
+
+    #[test]
+    fn is_unborn_head_false_for_non_repo() {
+        let dir = temp_dir();
+        assert!(!is_unborn_head(&dir));
     }
 
     #[test]
