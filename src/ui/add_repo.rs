@@ -343,4 +343,23 @@ mod tests {
             "hint must still render below the error:\n{out}"
         );
     }
+
+    #[test]
+    fn new_worktree_modal_wraps_long_error_within_modal_width() {
+        // Regression for #44: a long error message used to spill past the
+        // right border because the error row was a single, unwrapped line.
+        // We render an intentionally over-wide message to assert the modal
+        // still contains it within its frame.
+        use crate::app::{Modal, NewWorktreeModal};
+
+        let mut app = AppState::fixture();
+        app.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal {
+            error: Some(
+                "this is a deliberately very long error message that definitely exceeds the modal width and must wrap"
+                    .to_string(),
+            ),
+            ..NewWorktreeModal::for_repo(0, vec![])
+        }));
+        insta::assert_snapshot!(render_to_string(&app));
+    }
 }

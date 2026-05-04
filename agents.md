@@ -17,3 +17,10 @@ When fixing CI failures (clippy, fmt, tests):
 
 - **Do not suppress warnings.** Never add `#[allow(...)]` attributes to silence clippy lints. Fix the underlying code instead.
 - **Do not make functional changes to fix CI.** Formatting and lint fixes must be purely structural — rename, reorder, collapse, derive — without altering runtime behavior.
+
+## TUI Changes
+
+When changing anything that renders to the terminal (modals, sidebar rows, status lines, hints, error messages):
+
+- **Verify the change does not overflow its container.** Modals are fixed-width; long strings written with a single-line `Paragraph` will spill past the right border and look broken. Either keep the text within the inner width, or render with `Wrap { trim: false }` and allocate enough rows for the wrapped result.
+- **Snapshot the rendering.** Add or update an `insta` snapshot in `src/ui/snapshots/` that exercises the new content (especially error paths) so future changes that re-introduce overflow are visible in review.
