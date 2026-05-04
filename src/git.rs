@@ -282,11 +282,24 @@ pub fn is_git_repo(path: &Path) -> bool {
 /// unborn branch. `git worktree add` rejects unborn repos because there is
 /// no commit to base the new worktree on, so callers should surface a
 /// clear error instead of letting `git` fail with `fatal: invalid reference`.
+///
+/// Implemented by shelling out to `git rev-parse --verify HEAD`, which
+/// exits 0 with the SHA when HEAD resolves to a commit and non-zero
+/// otherwise. Goes through git rather than libgit2 because libgit2's
+/// `is_empty` / `head` behaviour on freshly-initialised repos differs
+/// between platforms (the equivalent libgit2 check returned `false` on
+/// Linux CI for repos that were genuinely unborn).
 pub fn is_unborn_head(repo_root: &Path) -> bool {
-    let Ok(repo) = Repository::open(repo_root) else {
+    if !repo_root.join(".git").exists() {
         return false;
-    };
-    repo.head().is_err() && repo.is_empty().unwrap_or(false)
+    }
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(false)
 }
 
 /// Resolve `origin/HEAD` to a branch name, e.g. `"main"` or `"master"`.
