@@ -169,6 +169,34 @@ impl Terminal {
     }
 }
 
+/// Extract the text under a rectangular region of the rendered terminal,
+/// at the given scrollback offset.  `start` and `end` are `(col, row)`
+/// pairs in row-major order (start <= end).  Returns None on lock failure.
+///
+/// This temporarily moves the parser's scrollback window so the read sees
+/// the same rows the user had highlighted; the next render call resets the
+/// offset, so this side effect is transparent.
+pub fn read_selection(
+    term: &Terminal,
+    start: (u16, u16),
+    end: (u16, u16),
+    scrollback: usize,
+) -> Option<String> {
+    let mut parser = term.parser.lock().ok()?;
+    parser.screen_mut().set_scrollback(scrollback);
+    let screen = parser.screen();
+    // vt100 takes rows first, then cols.  We extend `end_col` by 1 so the
+    // user-visible end column is included (contents_between's end is
+    // exclusive).
+    let (start_row, start_col) = (start.1, start.0);
+    let (end_row, mut end_col) = (end.1, end.0);
+    let (_rows, cols) = screen.size();
+    if end_col < cols {
+        end_col += 1;
+    }
+    Some(screen.contents_between(start_row, start_col, end_row, end_col))
+}
+
 impl Drop for Terminal {
     fn drop(&mut self) {
         // Best-effort kill — ignore errors (child may already be dead).

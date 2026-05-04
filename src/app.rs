@@ -38,6 +38,41 @@ pub struct AppState {
     /// back to defaults so the user still gets a working TUI; this
     /// message surfaces in the sidebar so the typo isn't silent.
     pub config_error: Option<String>,
+    /// Best-effort verdict on whether the host terminal will honour our
+    /// OSC 52 clipboard writes.  Detected once at startup from env vars
+    /// (`TMUX`, `TERM_PROGRAM`, `TERM`, …) — see `detect_clipboard_support`.
+    pub clipboard_support: ClipboardSupport,
+    /// One-shot warning that surfaces in the sidebar after the user
+    /// attempts a copy and `clipboard_support` is not `Likely`.  Stays
+    /// visible for the rest of the session so they understand why a
+    /// paste in another window came up empty.
+    pub clipboard_warning: Option<String>,
+}
+
+/// Coarse confidence that an OSC 52 copy will reach the system clipboard.
+/// Detected from `$TMUX`, `$TERM_PROGRAM`, and `$TERM` at startup.
+///
+/// Heuristic on purpose — there's no reliable in-band query for OSC 52
+/// support.  The verdict only changes whether we *warn* the user; we
+/// always still emit the escape so an unrecognised emulator that happens
+/// to support it still works.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum ClipboardSupport {
+    /// Recognised emulator known to honour OSC 52 by default.
+    Likely,
+    /// Running inside tmux: copy works only if the user has
+    /// `set -g set-clipboard on` in their tmux config.  We can't read
+    /// that config, so warn unconditionally on first copy.
+    TmuxRequiresConfig,
+    /// Recognised emulator known *not* to honour OSC 52 by default
+    /// (e.g. older macOS Terminal.app).  Held string is the name we
+    /// matched on so the warning can be specific.
+    Unsupported(String),
+    /// Unrecognised environment.  Probably works (most modern terminals
+    /// do), but we can't promise — warn the user once so they know what
+    /// to check if a paste comes back empty.
+    #[default]
+    Unknown,
 }
 
 /// Cached rects from the most recent `ui::render` pass.  Used by mouse
@@ -54,6 +89,11 @@ pub struct WorktreeTerminals {
     pub active: usize,
     pub mode: TerminalMode,
     pub scroll_offset: usize,
+    /// In-pane drag selection.  Coordinates are cell positions relative to
+    /// the rendered terminal area (top-left = (0, 0)).  Cleared whenever
+    /// the rendered content shifts (scroll, tab change, view toggle, etc.)
+    /// so the highlight never references stale cells.
+    pub selection: Option<MainSelection>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -63,6 +103,42 @@ pub enum TerminalMode {
     Scrollback,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MainSelection {
+    pub anchor: (u16, u16),
+    pub head: (u16, u16),
+    pub dragging: bool,
+}
+
+impl MainSelection {
+    pub fn new(at: (u16, u16)) -> Self {
+        Self {
+            anchor: at,
+            head: at,
+            dragging: true,
+        }
+    }
+
+    /// Has the user dragged at all?  A pure click (anchor == head) is not a
+    /// selection — it's just a focus change.
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.head
+    }
+
+    /// Selection in row-major order: (start, end) where start <= end.
+    pub fn ordered(&self) -> ((u16, u16), (u16, u16)) {
+        let a = self.anchor;
+        let h = self.head;
+        let a_key = (a.1, a.0);
+        let h_key = (h.1, h.0);
+        if a_key <= h_key {
+            (a, h)
+        } else {
+            (h, a)
+        }
+    }
+}
+
 impl WorktreeTerminals {
     pub fn new(term: Terminal) -> Self {
         Self {
@@ -70,6 +146,7 @@ impl WorktreeTerminals {
             active: 0,
             mode: TerminalMode::Insert,
             scroll_offset: 0,
+            selection: None,
         }
     }
 
@@ -86,6 +163,7 @@ impl WorktreeTerminals {
         self.active = self.list.len() - 1;
         self.mode = TerminalMode::Insert;
         self.scroll_offset = 0;
+        self.selection = None;
     }
 
     /// Close the active tab; returns true when this was the last tab and
@@ -103,6 +181,7 @@ impl WorktreeTerminals {
         }
         self.mode = TerminalMode::Insert;
         self.scroll_offset = 0;
+        self.selection = None;
         false
     }
 
@@ -111,6 +190,7 @@ impl WorktreeTerminals {
             return;
         }
         self.active = (self.active + 1) % self.list.len();
+        self.selection = None;
     }
 
     pub fn prev_tab(&mut self) {
@@ -122,6 +202,7 @@ impl WorktreeTerminals {
         } else {
             self.active - 1
         };
+        self.selection = None;
     }
 
     pub fn toggle_scrollback(&mut self) {
@@ -132,19 +213,23 @@ impl WorktreeTerminals {
                 TerminalMode::Insert
             }
         };
+        self.selection = None;
     }
 
     pub fn scroll(&mut self, delta: i32) {
         let new = self.scroll_offset as i32 + delta;
         self.scroll_offset = new.max(0) as usize;
+        self.selection = None;
     }
 
     pub fn scroll_home(&mut self) {
         self.scroll_offset = 10_000;
+        self.selection = None;
     }
 
     pub fn scroll_end(&mut self) {
         self.scroll_offset = 0;
+        self.selection = None;
     }
 
     /// Aggregate per-worktree agent state across every terminal in this
@@ -548,6 +633,8 @@ impl AppState {
             github_authenticated: false,
             has_github_repo,
             config_error: None,
+            clipboard_support: ClipboardSupport::default(),
+            clipboard_warning: None,
         })
     }
 
@@ -1926,6 +2013,8 @@ impl AppState {
             github_authenticated: false,
             has_github_repo: false,
             config_error: None,
+            clipboard_support: ClipboardSupport::default(),
+            clipboard_warning: None,
         };
         state.ui.cursor = Some(SidebarCursor::Repo(0));
         state
@@ -1948,6 +2037,8 @@ impl AppState {
             github_authenticated: false,
             has_github_repo: false,
             config_error: None,
+            clipboard_support: ClipboardSupport::default(),
+            clipboard_warning: None,
         }
     }
 }
@@ -2134,6 +2225,7 @@ mod tests {
             active: 0,
             mode: TerminalMode::Insert,
             scroll_offset: 0,
+            selection: None,
         };
         // next/prev on empty → no panic
         ts.next_tab();
@@ -2150,6 +2242,59 @@ mod tests {
         assert_eq!(ts.scroll_offset, 0);
         ts.toggle_scrollback();
         assert_eq!(ts.mode, TerminalMode::Insert);
+    }
+
+    #[test]
+    fn main_selection_orders_by_row_then_column() {
+        // Selection drawn upward (head above anchor) must still produce
+        // start <= end so vt100's contents_between sees a valid range.
+        let sel = MainSelection {
+            anchor: (10, 5),
+            head: (3, 2),
+            dragging: false,
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, (3, 2));
+        assert_eq!(end, (10, 5));
+
+        // Same row, head left of anchor.
+        let sel = MainSelection {
+            anchor: (8, 4),
+            head: (2, 4),
+            dragging: false,
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, (2, 4));
+        assert_eq!(end, (8, 4));
+    }
+
+    #[test]
+    fn main_selection_pure_click_is_empty() {
+        let sel = MainSelection::new((5, 7));
+        assert!(sel.is_empty());
+        let sel = MainSelection {
+            anchor: (5, 7),
+            head: (5, 8),
+            dragging: false,
+        };
+        assert!(!sel.is_empty());
+    }
+
+    #[test]
+    fn worktree_terminals_clears_selection_on_view_changes() {
+        let mut ts = WorktreeTerminals {
+            list: Vec::new(),
+            active: 0,
+            mode: TerminalMode::Insert,
+            scroll_offset: 0,
+            selection: Some(MainSelection::new((1, 1))),
+        };
+        ts.scroll(3);
+        assert!(ts.selection.is_none());
+
+        ts.selection = Some(MainSelection::new((1, 1)));
+        ts.toggle_scrollback();
+        assert!(ts.selection.is_none());
     }
 
     #[test]

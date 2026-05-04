@@ -120,6 +120,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         ));
     }
 
+    // Surface a clipboard warning after the user has tried to copy and
+    // we couldn't be sure the host emulator honours OSC 52.  The copy
+    // still went out — this just explains why a paste elsewhere may have
+    // come up empty.  Set once per session.
+    if let Some(msg) = &app.clipboard_warning {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            " ⚠ clipboard: copy may not work",
+            Style::default().fg(app.theme.warn),
+        ));
+        lines.push(Line::styled(
+            format!("   {}", first_line(msg, SIDEBAR_WIDTH.saturating_sub(3))),
+            Style::default().fg(app.theme.dim),
+        ));
+    }
+
     // Activity footer — last row of the sidebar.  Shows any background
     // tasks in flight so the user understands why a badge or list is
     // about to change.  Idle state is blank.

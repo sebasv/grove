@@ -31,7 +31,10 @@ use crossterm::{
 use portable_pty::PtySize;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{AppMessage, AppState, Direction, FocusZone, Modal, NewWorktreeModal};
+use crate::app::{
+    AppMessage, AppState, ClipboardSupport, Direction, FocusZone, MainSelection, Modal,
+    NewWorktreeModal,
+};
 use crate::async_evt::{Event, EventReceiver, EventSender, WorktreeId};
 use crate::config::Config;
 use crate::paths::AppPaths;
@@ -149,6 +152,7 @@ async fn run_cli() -> Result<ExitCode> {
     let mut app = AppState::load(config, config_path.clone())?;
     app.theme_name = theme_name;
     app.theme = theme::resolve(theme_name);
+    app.clipboard_support = detect_clipboard_support();
     if let Some(msg) = config_error {
         // Log so the full error stays available; the sidebar shows a
         // truncated version so the user knows their typo was ignored.
@@ -443,18 +447,28 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if rect_contains(app.layout.sidebar, col, row) {
+                clear_main_selection(app);
                 app.ui.focus = crate::app::FocusZone::Sidebar;
                 route_sidebar_click(app, row);
             } else if let Some(bar) = app.layout.tab_bar {
                 if rect_contains(bar, col, row) {
+                    clear_main_selection(app);
                     app.ui.focus = crate::app::FocusZone::Main;
                     route_tab_click(app, col, bar);
                 } else if rect_contains(app.layout.main, col, row) {
                     app.ui.focus = crate::app::FocusZone::Main;
+                    start_main_selection(app, col, row);
                 }
             } else if rect_contains(app.layout.main, col, row) {
                 app.ui.focus = crate::app::FocusZone::Main;
+                start_main_selection(app, col, row);
             }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            update_main_selection(app, col, row);
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            finish_main_selection(app);
         }
         MouseEventKind::ScrollUp if rect_contains(app.layout.main, col, row) => {
             if let Some(id) = app.active_worktree_id() {
@@ -485,6 +499,215 @@ fn handle_mouse(mouse: MouseEvent, app: &mut AppState, _tx: &EventSender) {
 
 fn rect_contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+}
+
+/// Clear any in-pane selection on the active worktree, if there is one.
+/// Called before focus-changing clicks (sidebar, tab bar) so a stale
+/// highlight doesn't outlive the gesture that produced it.
+fn clear_main_selection(app: &mut AppState) {
+    let Some(id) = app.active_worktree_id() else {
+        return;
+    };
+    if let Some(ts) = app.terminals.get_mut(&id) {
+        ts.selection = None;
+    }
+}
+
+/// Translate an absolute mouse position into a cell coordinate inside the
+/// rendered terminal area, clamped to its bounds.  Returns None if the main
+/// pane has zero size (no terminal currently rendered).
+fn main_pane_cell(app: &AppState, col: u16, row: u16) -> Option<(u16, u16)> {
+    let r = app.layout.main;
+    if r.width == 0 || r.height == 0 {
+        return None;
+    }
+    let cx = col.saturating_sub(r.x).min(r.width - 1);
+    let cy = row.saturating_sub(r.y).min(r.height - 1);
+    Some((cx, cy))
+}
+
+fn start_main_selection(app: &mut AppState, col: u16, row: u16) {
+    let Some(at) = main_pane_cell(app, col, row) else {
+        return;
+    };
+    let Some(id) = app.active_worktree_id() else {
+        return;
+    };
+    if let Some(ts) = app.terminals.get_mut(&id) {
+        ts.selection = Some(MainSelection::new(at));
+    }
+}
+
+fn update_main_selection(app: &mut AppState, col: u16, row: u16) {
+    let Some(head) = main_pane_cell(app, col, row) else {
+        return;
+    };
+    let Some(id) = app.active_worktree_id() else {
+        return;
+    };
+    if let Some(ts) = app.terminals.get_mut(&id) {
+        if let Some(sel) = ts.selection.as_mut() {
+            if sel.dragging {
+                sel.head = head;
+            }
+        }
+    }
+}
+
+fn finish_main_selection(app: &mut AppState) {
+    // Snapshot the selection inside a scoped block so the mutable borrow
+    // on `app.terminals` is released before we touch `app` again to set
+    // the clipboard warning.
+    let copied: Option<String> = {
+        let Some(id) = app.active_worktree_id() else {
+            return;
+        };
+        let Some(ts) = app.terminals.get_mut(&id) else {
+            return;
+        };
+        let Some(sel) = ts.selection.as_mut() else {
+            return;
+        };
+        if !sel.dragging {
+            return;
+        }
+        sel.dragging = false;
+        if sel.is_empty() {
+            // Pure click — no selection to preserve.
+            ts.selection = None;
+            return;
+        }
+        // Auto-copy: read the highlighted region from the active terminal's
+        // vt100 screen.  Reading here (rather than at next render) keeps
+        // the snapshot stable: even if the shell repaints in the next
+        // millisecond, the copied text matches what the user saw under the
+        // highlight.
+        let (start, end) = sel.ordered();
+        let scroll = ts.scroll_offset;
+        ts.active_ref()
+            .and_then(|term| terminal::read_selection(term, start, end, scroll))
+            .filter(|text| !text.is_empty())
+    };
+    let Some(text) = copied else {
+        return;
+    };
+    osc52_copy(&text);
+    // The copy may not have actually reached the system clipboard — OSC 52
+    // is best-effort and depends on host config.  If the verdict at startup
+    // wasn't "Likely", surface a one-time hint in the sidebar so the user
+    // understands why a paste in another window came up empty.
+    maybe_set_clipboard_warning(app);
+}
+
+/// Set `app.clipboard_warning` once per session if we have reason to think
+/// OSC 52 won't reach the user's system clipboard.  Called from the copy
+/// path so users who never select+copy never see the warning.
+fn maybe_set_clipboard_warning(app: &mut AppState) {
+    if app.clipboard_warning.is_some() {
+        return;
+    }
+    let msg = match &app.clipboard_support {
+        ClipboardSupport::Likely => return,
+        ClipboardSupport::TmuxRequiresConfig => {
+            "tmux: needs `set -g set-clipboard on` for OSC 52".to_string()
+        }
+        ClipboardSupport::Unsupported(name) => {
+            format!("{name}: doesn't support OSC 52 clipboard")
+        }
+        ClipboardSupport::Unknown => "unknown terminal: clipboard may need config".to_string(),
+    };
+    log_to_file(&format!("clipboard: {msg}"));
+    app.clipboard_warning = Some(msg);
+}
+
+/// Best-effort guess at whether the host emulator will turn our OSC 52
+/// writes into a real clipboard update.  Read once at startup; the result
+/// only changes whether we *warn* — we always still emit the escape so an
+/// unrecognised emulator that does happen to support OSC 52 keeps working.
+///
+/// Heuristic ordering: tmux first (because it wraps every other emulator
+/// and has its own gating), then `TERM_PROGRAM` (set by most macOS apps),
+/// then `TERM`, then individual env-var fingerprints.
+fn detect_clipboard_support() -> ClipboardSupport {
+    if std::env::var_os("TMUX").is_some() {
+        return ClipboardSupport::TmuxRequiresConfig;
+    }
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    match term_program.as_str() {
+        "iTerm.app" | "WezTerm" | "ghostty" | "Ghostty" | "vscode" | "Hyper" => {
+            return ClipboardSupport::Likely;
+        }
+        "Apple_Terminal" => {
+            return ClipboardSupport::Unsupported("macOS Terminal.app".to_string());
+        }
+        _ => {}
+    }
+    let term = std::env::var("TERM").unwrap_or_default();
+    if term.starts_with("xterm-kitty")
+        || term.starts_with("alacritty")
+        || term.starts_with("xterm-ghostty")
+        || term.starts_with("foot")
+        || term.starts_with("rio")
+    {
+        return ClipboardSupport::Likely;
+    }
+    if std::env::var_os("KITTY_WINDOW_ID").is_some()
+        || std::env::var_os("ALACRITTY_LOG").is_some()
+        || std::env::var_os("WEZTERM_PANE").is_some()
+        || std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some()
+    {
+        return ClipboardSupport::Likely;
+    }
+    ClipboardSupport::Unknown
+}
+
+/// Push `text` to the host terminal's clipboard via the OSC 52 escape.
+/// Works through any modern terminal that opts in (most do); silent no-op
+/// where it doesn't.  We write to grove's own stdout — the host emulator
+/// strips the sequence from what reaches the screen.
+fn osc52_copy(text: &str) {
+    use std::io::Write as _;
+    let mut out = io::stdout().lock();
+    let _ = out.write_all(b"\x1b]52;c;");
+    let _ = out.write_all(base64_encode(text.as_bytes()).as_bytes());
+    let _ = out.write_all(b"\x07");
+    let _ = out.flush();
+}
+
+/// Standard base64 encoder (RFC 4648, alphabet A–Z a–z 0–9 + /, '=' pad).
+/// Inline because we only need ~30 lines for OSC 52 — pulling in a crate
+/// would be larger than the function.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut chunks = bytes.chunks_exact(3);
+    for c in &mut chunks {
+        let n = ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | (c[2] as u32);
+        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+        out.push(ALPHABET[(n & 0x3f) as usize] as char);
+    }
+    let rem = chunks.remainder();
+    match rem.len() {
+        0 => {}
+        1 => {
+            let n = (rem[0] as u32) << 16;
+            out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+            out.push('=');
+            out.push('=');
+        }
+        2 => {
+            let n = ((rem[0] as u32) << 16) | ((rem[1] as u32) << 8);
+            out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+            out.push('=');
+        }
+        _ => unreachable!(),
+    }
+    out
 }
 
 fn route_tab_click(app: &mut AppState, col: u16, bar: ratatui::layout::Rect) {
@@ -589,6 +812,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
         InputAction::PtyBytes(bytes) => {
             if let Some(id) = app.active_worktree_id() {
                 if let Some(ts) = app.terminals.get_mut(&id) {
+                    ts.selection = None;
                     if let Some(term) = ts.active_mut() {
                         let _ = term.write(&bytes);
                     }
@@ -601,6 +825,7 @@ fn handle_input(key: KeyEvent, app: &mut AppState, tx: &EventSender) {
                     if ts.mode == crate::app::TerminalMode::Scrollback {
                         ts.toggle_scrollback();
                     }
+                    ts.selection = None;
                     if let Some(term) = ts.active_mut() {
                         let _ = term.write(&bytes);
                     }
@@ -1131,4 +1356,72 @@ fn install_panic_hook() {
         let _ = restore_terminal();
         original(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{base64_encode, maybe_set_clipboard_warning};
+    use crate::app::{AppState, ClipboardSupport};
+
+    #[test]
+    fn base64_matches_rfc_4648_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_handles_high_bytes_and_unicode() {
+        assert_eq!(base64_encode("héllo".as_bytes()), "aMOpbGxv");
+        assert_eq!(base64_encode(&[0xff, 0xfe, 0xfd]), "//79");
+    }
+
+    // detect_clipboard_support reads process-global env vars, so we don't
+    // exercise the matching paths in unit tests (cargo runs tests in
+    // parallel and mutating env affects siblings).  Instead we test the
+    // pure decision in `maybe_set_clipboard_warning` against each verdict.
+
+    #[test]
+    fn likely_support_does_not_set_warning() {
+        let mut app = AppState::fixture();
+        app.clipboard_support = ClipboardSupport::Likely;
+        maybe_set_clipboard_warning(&mut app);
+        assert!(app.clipboard_warning.is_none());
+    }
+
+    #[test]
+    fn tmux_sets_a_specific_hint() {
+        let mut app = AppState::fixture();
+        app.clipboard_support = ClipboardSupport::TmuxRequiresConfig;
+        maybe_set_clipboard_warning(&mut app);
+        let msg = app.clipboard_warning.as_deref().unwrap();
+        assert!(msg.contains("tmux"));
+        assert!(msg.contains("set-clipboard"));
+    }
+
+    #[test]
+    fn unsupported_emulator_names_the_culprit() {
+        let mut app = AppState::fixture();
+        app.clipboard_support = ClipboardSupport::Unsupported("macOS Terminal.app".to_string());
+        maybe_set_clipboard_warning(&mut app);
+        let msg = app.clipboard_warning.as_deref().unwrap();
+        assert!(msg.contains("macOS Terminal.app"));
+    }
+
+    #[test]
+    fn warning_is_set_only_once_per_session() {
+        let mut app = AppState::fixture();
+        app.clipboard_support = ClipboardSupport::Unknown;
+        maybe_set_clipboard_warning(&mut app);
+        let first = app.clipboard_warning.clone();
+        // Switching the verdict mid-session shouldn't overwrite the
+        // already-shown hint — keeps the sidebar text stable.
+        app.clipboard_support = ClipboardSupport::TmuxRequiresConfig;
+        maybe_set_clipboard_warning(&mut app);
+        assert_eq!(app.clipboard_warning, first);
+    }
 }

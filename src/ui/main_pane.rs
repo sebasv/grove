@@ -1,11 +1,11 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{AppState, FocusZone, MainView, TerminalMode, WorktreeTerminals};
+use crate::app::{AppState, FocusZone, MainSelection, MainView, TerminalMode, WorktreeTerminals};
 use crate::ui::diff;
 
 const DIVIDER: &str = "────────────────────────────────────────";
@@ -105,6 +105,42 @@ fn render_active_terminal(frame: &mut Frame, area: Rect, ts: &WorktreeTerminals)
     };
     parser.screen_mut().set_scrollback(ts.scroll_offset);
     frame.render_widget(PseudoTerminal::new(parser.screen()), area);
+    if let Some(sel) = ts.selection.as_ref() {
+        paint_selection(frame, area, sel);
+    }
+}
+
+/// Apply the REVERSED modifier to every cell under the selection so the
+/// user sees the same span they're about to copy.  Selection coords are
+/// relative to `area`'s top-left.
+fn paint_selection(frame: &mut Frame, area: Rect, sel: &MainSelection) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let (start, end) = sel.ordered();
+    let last_col = area.width.saturating_sub(1);
+    let buf = frame.buffer_mut();
+    for row in start.1..=end.1 {
+        if row >= area.height {
+            break;
+        }
+        let (lo, hi) = if start.1 == end.1 {
+            (start.0, end.0)
+        } else if row == start.1 {
+            (start.0, last_col)
+        } else if row == end.1 {
+            (0, end.0)
+        } else {
+            (0, last_col)
+        };
+        for col in lo..=hi.min(last_col) {
+            let pos = Position::new(area.x + col, area.y + row);
+            if let Some(cell) = buf.cell_mut(pos) {
+                let style = cell.style().add_modifier(Modifier::REVERSED);
+                cell.set_style(style);
+            }
+        }
+    }
 }
 
 fn main_pane_title(app: &AppState) -> String {
