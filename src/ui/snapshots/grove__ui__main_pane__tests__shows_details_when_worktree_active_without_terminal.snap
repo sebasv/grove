@@ -1,6 +1,5 @@
 ---
 source: src/ui/main_pane.rs
-assertion_line: 140
 expression: render_to_string(&app)
 ---
 "┌ grove · feat/sidebar ────────────────────────────────────┐"

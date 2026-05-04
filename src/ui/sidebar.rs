@@ -174,7 +174,7 @@ fn worktree_line(
         badge_width(&status_spans) + 1 // one-space gap before badges
     };
     let branch_budget = SIDEBAR_WIDTH.saturating_sub(WORKTREE_PREFIX + status_cols);
-    let branch_shown = truncate(branch, branch_budget);
+    let branch_shown = crate::ui::truncate_to_width(branch, branch_budget);
 
     // Pad so badges end exactly at SIDEBAR_WIDTH.
     let used = WORKTREE_PREFIX + branch_shown.chars().count();
@@ -203,21 +203,7 @@ fn worktree_line(
 
 fn first_line(s: &str, max_cols: usize) -> String {
     let line = s.lines().next().unwrap_or("");
-    truncate(line, max_cols)
-}
-
-fn truncate(s: &str, max_cols: usize) -> String {
-    let len = s.chars().count();
-    if len <= max_cols {
-        return s.to_string();
-    }
-    if max_cols == 0 {
-        return String::new();
-    }
-    let keep = max_cols - 1;
-    let mut t: String = s.chars().take(keep).collect();
-    t.push('…');
-    t
+    crate::ui::truncate_to_width(line, max_cols)
 }
 
 #[cfg(test)]
