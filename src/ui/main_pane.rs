@@ -169,7 +169,7 @@ fn active_lines_without_terminal(app: &AppState, r: usize, w: usize) -> Vec<Line
 mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
-    use crate::app::{AppMessage, AppState, SidebarCursor};
+    use crate::app::{AppState, SidebarCursor};
 
     fn render_to_string(app: &AppState) -> String {
         let backend = TestBackend::new(60, 12);
@@ -195,17 +195,18 @@ mod tests {
             repo: 0,
             worktree: 1,
         });
-        app.update(AppMessage::Activate);
         insta::assert_snapshot!(render_to_string(&app));
     }
 
     #[test]
-    fn stale_active_worktree_shows_prompt_not_panic() {
-        use crate::state::ActiveWorktreeId;
-        use std::path::PathBuf;
+    fn out_of_bounds_cursor_shows_prompt_not_panic() {
+        // Defensive: if cursor's indices ever fall out of step with the
+        // repos list (e.g. a bug elsewhere skipped a remap), the main pane
+        // must degrade gracefully instead of panicking.
         let mut app = AppState::fixture();
-        app.ui.active_worktree = Some(ActiveWorktreeId {
-            path: PathBuf::from("/nonexistent/path"),
+        app.ui.cursor = Some(SidebarCursor::Worktree {
+            repo: 99,
+            worktree: 99,
         });
         let output = render_to_string(&app);
         assert!(output.contains("Select a worktree"));
