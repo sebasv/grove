@@ -1112,6 +1112,12 @@ impl AppState {
         let wt_root = self.effective_worktree_root(repo_idx);
         let wt_root_ref = wt_root.as_deref();
 
+        if git::is_unborn_head(&repo_root) {
+            anyhow::bail!(
+                "repo has no commits yet — make an initial commit before adding worktrees"
+            );
+        }
+
         // Cursor == 0 → "Create new branch <input>".  Any other cursor
         // position selects an existing branch.
         match m.selected_branch() {

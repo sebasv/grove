@@ -278,6 +278,17 @@ pub fn is_git_repo(path: &Path) -> bool {
     Repository::open(path).is_ok()
 }
 
+/// Returns `true` when the repo has no commits yet — i.e. HEAD points at an
+/// unborn branch. `git worktree add` rejects unborn repos because there is
+/// no commit to base the new worktree on, so callers should surface a
+/// clear error instead of letting `git` fail with `fatal: invalid reference`.
+pub fn is_unborn_head(repo_root: &Path) -> bool {
+    let Ok(repo) = Repository::open(repo_root) else {
+        return false;
+    };
+    repo.head().is_err() && repo.is_empty().unwrap_or(false)
+}
+
 /// Resolve `origin/HEAD` to a branch name, e.g. `"main"` or `"master"`.
 /// Returns `None` when the remote has never been fetched, `origin/HEAD`
 /// was not set by the remote, or the repo has no `origin` at all.
@@ -707,6 +718,26 @@ mod tests {
     fn is_git_repo_rejects_non_repo() {
         let dir = temp_dir();
         assert!(!is_git_repo(&dir));
+    }
+
+    #[test]
+    fn is_unborn_head_true_for_freshly_initialised_repo() {
+        let dir = temp_dir();
+        run_git_test(&dir, &["init", "--quiet", "--initial-branch=main"]);
+        assert!(is_unborn_head(&dir));
+    }
+
+    #[test]
+    fn is_unborn_head_false_after_first_commit() {
+        let dir = temp_dir();
+        init_repo(&dir);
+        assert!(!is_unborn_head(&dir));
+    }
+
+    #[test]
+    fn is_unborn_head_false_for_non_repo() {
+        let dir = temp_dir();
+        assert!(!is_unborn_head(&dir));
     }
 
     #[test]
