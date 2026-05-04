@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{AddRepoModal, NewWorktreeModal};
@@ -101,8 +101,10 @@ pub fn render_new_worktree(
     theme: &Theme,
 ) {
     let visible = 10usize;
-    // input (1) + blank (1) + list (visible) + blank (1) + error (1) + blank (1) + hint (1) + padding
-    let height = (visible + 9) as u16;
+    // Error gets 2 rows so messages that exceed the modal width wrap onto a
+    // second line instead of being clipped at the right border.
+    let error_rows: u16 = 2;
+    let height = (visible as u16) + 8 + error_rows;
     let modal_area = centered_rect(70, height, area);
     frame.render_widget(Clear, modal_area);
 
@@ -118,7 +120,7 @@ pub fn render_new_worktree(
         Constraint::Length(1),              // separator
         Constraint::Length(visible as u16), // list
         Constraint::Length(1),              // blank
-        Constraint::Length(1),              // error
+        Constraint::Length(error_rows),     // error (wraps)
         Constraint::Length(1),              // blank
         Constraint::Length(1),              // hint
     ])
@@ -148,7 +150,8 @@ pub fn render_new_worktree(
             Paragraph::new(Line::styled(
                 format!("  ! {err}"),
                 Style::default().fg(Color::Red),
-            )),
+            ))
+            .wrap(Wrap { trim: false }),
             rows[6],
         );
     }
@@ -257,6 +260,25 @@ mod tests {
             app.update(AppMessage::InputChar(c));
         }
         app.update(AppMessage::SubmitModal);
+        insta::assert_snapshot!(render_to_string(&app));
+    }
+
+    #[test]
+    fn new_worktree_modal_wraps_long_error_within_modal_width() {
+        // Regression for #44: a long error message used to spill past the
+        // right border because the error row was a single, unwrapped line.
+        // We render an intentionally over-wide message to assert the modal
+        // still contains it within its frame.
+        use crate::app::{Modal, NewWorktreeModal};
+
+        let mut app = AppState::fixture();
+        app.ui.modal = Some(Modal::NewWorktree(NewWorktreeModal {
+            error: Some(
+                "this is a deliberately very long error message that definitely exceeds the modal width and must wrap"
+                    .to_string(),
+            ),
+            ..NewWorktreeModal::for_repo(0, vec![])
+        }));
         insta::assert_snapshot!(render_to_string(&app));
     }
 }

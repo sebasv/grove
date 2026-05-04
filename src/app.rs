@@ -1113,9 +1113,7 @@ impl AppState {
         let wt_root_ref = wt_root.as_deref();
 
         if git::is_unborn_head(&repo_root) {
-            anyhow::bail!(
-                "repo has no commits yet — make an initial commit before adding worktrees"
-            );
+            anyhow::bail!("repo has no commits yet — make an initial commit first");
         }
 
         // Cursor == 0 → "Create new branch <input>".  Any other cursor
